@@ -6,6 +6,22 @@ interface UseSwipePagerOptions {
   pageCount: number;
   width: number;
   onIndexChange: (index: number) => void;
+  gesture?: {
+    /**
+     * Minimum horizontal movement (px) required before the pager tries to claim the gesture.
+     * Defaults to 10 to match existing behavior.
+     */
+    minDx?: number;
+    /**
+     * If provided, the pager will refuse to claim gestures once vertical movement exceeds this (px).
+     * Useful when embedding vertical ScrollViews inside the pager to avoid scroll stutter.
+     */
+    maxDy?: number;
+    /**
+     * Horizontal-vs-vertical dominance ratio. Defaults to 1.2 to match existing behavior.
+     */
+    dominanceRatio?: number;
+  };
 }
 
 interface UseSwipePagerResult {
@@ -18,6 +34,7 @@ export function useSwipePager({
   pageCount,
   width,
   onIndexChange,
+  gesture,
 }: UseSwipePagerOptions): UseSwipePagerResult {
   const translateX = useRef(new Animated.Value(0)).current;
   const swipeBaseXRef = useRef(0);
@@ -37,14 +54,18 @@ export function useSwipePager({
   const panResponder = useMemo(() => {
     const maxIndex = pageCount - 1;
     const minTranslate = -maxIndex * width;
+    const minDx = gesture?.minDx ?? 10;
+    const maxDy = gesture?.maxDy;
+    const dominanceRatio = gesture?.dominanceRatio ?? 1.2;
 
     return PanResponder.create({
       onMoveShouldSetPanResponder: (_evt, g) => {
         if (!width) return false;
         const ax = Math.abs(g.dx);
         const ay = Math.abs(g.dy);
-        if (ax < 10) return false;
-        return ax > ay * 1.2;
+        if (ax < minDx) return false;
+        if (typeof maxDy === 'number' && ay > maxDy) return false;
+        return ax > ay * dominanceRatio;
       },
       onPanResponderGrant: () => {
         if (!width) return;
@@ -80,7 +101,7 @@ export function useSwipePager({
         }).start();
       },
     });
-  }, [activeIndex, clamp, translateX, width, pageCount, onIndexChange]);
+  }, [activeIndex, clamp, translateX, width, pageCount, onIndexChange, gesture?.minDx, gesture?.maxDy, gesture?.dominanceRatio]);
 
   return { translateX, panResponder };
 }

@@ -155,6 +155,9 @@ interface AppContextType {
   // Processing state
   processing: boolean;
   processingStatus: string;
+  processingPhotoType: PhotoType | null;
+  pickerBusy: boolean;
+  pickerBusyPhotoType: PhotoType | null;
 
   // UI Busy
   uiBusy: boolean;
@@ -248,6 +251,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const [processing, setProcessing] = useState(false);
   const [processingStatus, setProcessingStatus] = useState('Processing…');
+  const [processingPhotoType, setProcessingPhotoType] = useState<PhotoType | null>(null);
+  const [pickerBusy, setPickerBusy] = useState(false);
+  const [pickerBusyPhotoType, setPickerBusyPhotoType] = useState<PhotoType | null>(null);
 
   const [hiddenKanjiItems, setHiddenKanjiItems] = useState<KanjiEntry[]>([]);
   const [hiddenWordGroups, setHiddenWordGroups] = useState<{ display: string; aliases: string[] }[]>([]);
@@ -1033,6 +1039,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const reprocessPhoto = useCallback(
     async (photo: PhotoEntry) => {
+      setProcessingPhotoType(photo.type);
       setProcessing(true);
       setProcessingStatus('Reprocessing…');
       try {
@@ -1067,6 +1074,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       } finally {
         setProcessing(false);
         setProcessingStatus('Processing…');
+        setProcessingPhotoType(null);
       }
     },
     [detail, ensureMetaForKeys, fullImagePhoto?.id, loadPhotosForDetail, reloadGallery, reloadList, screen]
@@ -1118,6 +1126,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const processCapturedUri = useCallback(async (sourceUri: string, photoType: PhotoType) => {
+    setProcessingPhotoType(photoType);
     setProcessing(true);
     setProcessingStatus('Processing 1/1…');
     try {
@@ -1135,11 +1144,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setProcessing(false);
       setProcessingStatus('Processing…');
+      setProcessingPhotoType(null);
     }
   }, [reloadList]);
 
   const processCapturedUris = useCallback(async (sourceUris: string[], photoType: PhotoType) => {
     if (!sourceUris.length) return;
+    setProcessingPhotoType(photoType);
     setProcessing(true);
     const CONCURRENCY = 10;
     try {
@@ -1189,6 +1200,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setProcessing(false);
       setProcessingStatus('Processing…');
+      setProcessingPhotoType(null);
     }
   }, [reloadList]);
 
@@ -1206,17 +1218,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const pickFromGallery = useCallback(async (photoType: PhotoType) => {
     const ok = await requestMediaPerms();
     if (!ok) return;
+    setPickerBusy(true);
+    setPickerBusyPhotoType(photoType);
+    setProcessingPhotoType(photoType);
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsMultipleSelection: true,
       selectionLimit: 0,
       quality: 0.8,
     });
-    if (result.canceled) return;
+    if (result.canceled) {
+      setPickerBusy(false);
+      setPickerBusyPhotoType(null);
+      setProcessingPhotoType(null);
+      return;
+    }
     const uris = result.assets.map((a) => a.uri).filter(Boolean);
-    if (!uris.length) return;
+    if (!uris.length) {
+      setPickerBusy(false);
+      setPickerBusyPhotoType(null);
+      setProcessingPhotoType(null);
+      return;
+    }
     setProcessing(true);
     setProcessingStatus(`Loading ${uris.length} photo${uris.length > 1 ? 's' : ''}…`);
+    setPickerBusy(false);
+    setPickerBusyPhotoType(null);
     // Yield to allow UI to render loading state before heavy work
     await new Promise((r) => setTimeout(r, 50));
     if (uris.length <= 1) {
@@ -1314,6 +1341,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setFullImageMenuScrollY,
     processing,
     processingStatus,
+    processingPhotoType,
+    pickerBusy,
+    pickerBusyPhotoType,
     uiBusy,
     uiBusyLabel,
     hiddenKanjiItems,

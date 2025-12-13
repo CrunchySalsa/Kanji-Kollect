@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text } from 'react-native';
+import { View, Text, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { styles } from '../styles/theme';
+import { colors, styles } from '../styles/theme';
 import { useAppContext } from '../context/AppContext';
 import { useBackHandler } from '../hooks';
 import { Header } from '../components';
@@ -29,6 +29,9 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
     goBack,
     processing,
     processingStatus,
+    processingPhotoType,
+    pickerBusy,
+    pickerBusyPhotoType,
     uiBusy,
     uiBusyLabel,
     editModal,
@@ -188,13 +191,27 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
 
       <UiBusyModal visible={uiBusy} label={uiBusyLabel} />
 
-      {processing && (
-        <View style={styles.processingBar}>
-          <Text style={styles.processingText}>{processingStatus}</Text>
-        </View>
-      )}
+      {(processing || pickerBusy) && (() => {
+        const busyType = pickerBusyPhotoType ?? processingPhotoType;
+        const tint =
+          busyType === 'encounter' ? colors.success :
+          busyType === 'practice' ? colors.info :
+          colors.accent;
+        const bg =
+          busyType === 'encounter' ? 'rgba(34, 197, 94, 0.15)' :
+          busyType === 'practice' ? 'rgba(96, 165, 250, 0.15)' :
+          colors.accentSubtle;
+        const label = pickerBusy ? 'Loading photos…' : processingStatus;
+        return (
+          <View style={[styles.processingBar, { backgroundColor: bg }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }}>
+              <ActivityIndicator size="small" color={tint} style={{ marginRight: 8 }} />
+              <Text style={[styles.processingText, { color: tint }]}>{label}</Text>
+            </View>
+          </View>
+        );
+      })()}
 
-      {screen === 'settings' && <SettingsScreen />}
       {/* Keep ListScreen mounted to preserve scroll position when navigating away and back */}
       <View style={{ flex: 1, display: screen === 'list' ? 'flex' : 'none' }} pointerEvents={screen === 'list' ? 'auto' : 'none'}>
         <ListScreen />

@@ -198,6 +198,8 @@ export function FullImageModal({
     pageCount: 2,
     width: menuPagerWidth,
     onIndexChange: handleMenuIndexChange,
+    // Match the old GestureHandler behavior (fail quickly on vertical scroll) to avoid stutter.
+    gesture: { minDx: 12, maxDy: 12, dominanceRatio: 1.2 },
   });
 
   return (
@@ -293,7 +295,6 @@ export function FullImageModal({
                         }}
                         scrollEventThrottle={100}
                         onMomentumScrollEnd={() => onScrollYChange({ kanji: kanjiScrollYRef.current, word: wordScrollYRef.current })}
-                        onScrollEndDrag={() => onScrollYChange({ kanji: kanjiScrollYRef.current, word: wordScrollYRef.current })}
                       >
                         {kanjiRows.length ? (
                           <View style={{ marginTop: 10 }}>
@@ -328,7 +329,6 @@ export function FullImageModal({
                         }}
                         scrollEventThrottle={100}
                         onMomentumScrollEnd={() => onScrollYChange({ kanji: kanjiScrollYRef.current, word: wordScrollYRef.current })}
-                        onScrollEndDrag={() => onScrollYChange({ kanji: kanjiScrollYRef.current, word: wordScrollYRef.current })}
                       >
                         {wordRows.length ? (
                           <View style={{ marginTop: 10 }}>

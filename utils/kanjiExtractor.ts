@@ -13,6 +13,24 @@ const KATAKANA_RANGE_START = 0x30a0;
 const KATAKANA_RANGE_END = 0x30ff;
 
 /**
+ * Normalize OCR / document-extracted text so that Japanese word detection works even when
+ * the source inserts whitespace between characters (common in PDF text extraction and some OCR).
+ *
+ * Example:
+ *   "新 宿 日 本 語 学 園" -> "新宿日本語学園"
+ *   "大 嫌 い" -> "大嫌い"
+ */
+function normalizeJapaneseSpacing(text: string): string {
+  if (!text) return text;
+  // Treat full-width space and NBSP as whitespace for our purposes.
+  let out = text.replace(/[\u00a0\u3000]/g, ' ');
+  // Remove whitespace that occurs BETWEEN Japanese characters (kanji/kana).
+  // Note: avoids lookbehind for Hermes compatibility.
+  out = out.replace(/([\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf])[\s]+(?=[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf])/g, '$1');
+  return out;
+}
+
+/**
  * Check if a character is a Kanji.
  */
 export function isKanji(char: string): boolean {
@@ -83,11 +101,12 @@ function normalizeExtractedWord(word: string): string {
  * Words: Sequences of 2+ Kanji, optionally with trailing Hiragana (okurigana).
  */
 export function extractKanjiAndWords(text: string): ExtractionResult {
+  const normalizedText = normalizeJapaneseSpacing(text);
   const kanjiSet = new Set<string>();
   const wordsSet = new Set<string>();
 
   // Extract all unique kanji
-  for (const char of text) {
+  for (const char of normalizedText) {
     if (isKanji(char)) {
       kanjiSet.add(char);
     }
@@ -96,7 +115,7 @@ export function extractKanjiAndWords(text: string): ExtractionResult {
   // Extract compound words (2+ kanji in sequence, potentially with okurigana)
   // Pattern: 2+ kanji characters, optionally followed by hiragana
   const compoundPattern = /[\u4e00-\u9faf]{2,}[\u3040-\u309f]*/g;
-  const matches = text.match(compoundPattern);
+  const matches = normalizedText.match(compoundPattern);
   
   if (matches) {
     for (const match of matches) {
@@ -124,8 +143,9 @@ export function extractKanjiAndWords(text: string): ExtractionResult {
  */
 export function countKanjiOccurrences(text: string): Map<string, number> {
   const counts = new Map<string, number>();
+  const normalizedText = normalizeJapaneseSpacing(text);
   
-  for (const char of text) {
+  for (const char of normalizedText) {
     if (isKanji(char)) {
       counts.set(char, (counts.get(char) || 0) + 1);
     }
@@ -140,14 +160,15 @@ export function countKanjiOccurrences(text: string): Map<string, number> {
  */
 export function countWordOccurrences(text: string): Map<string, number> {
   const counts = new Map<string, number>();
+  const normalizedText = normalizeJapaneseSpacing(text);
 
-  const extracted = extractKanjiAndWords(text).words;
+  const extracted = extractKanjiAndWords(normalizedText).words;
   for (const w of extracted) {
     if (!w) continue;
     // Escape for regex
     const escaped = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re = new RegExp(escaped, 'g');
-    const matches = text.match(re);
+    const matches = normalizedText.match(re);
     const n = matches ? matches.length : 0;
     if (n > 0) counts.set(w, n);
   }
@@ -159,15 +180,16 @@ export function countWordOccurrences(text: string): Map<string, number> {
  * Extract kanji/words plus occurrence counts.
  */
 export function extractKanjiAndWordsWithCounts(text: string): ExtractionWithCountsResult {
-  const base = extractKanjiAndWords(text);
+  const normalizedText = normalizeJapaneseSpacing(text);
+  const base = extractKanjiAndWords(normalizedText);
 
   const kanjiCounts: Record<string, number> = {};
-  for (const [k, n] of countKanjiOccurrences(text).entries()) {
+  for (const [k, n] of countKanjiOccurrences(normalizedText).entries()) {
     kanjiCounts[k] = n;
   }
 
   const wordCounts: Record<string, number> = {};
-  for (const [w, n] of countWordOccurrences(text).entries()) {
+  for (const [w, n] of countWordOccurrences(normalizedText).entries()) {
     wordCounts[w] = n;
   }
 
@@ -254,7 +276,8 @@ async function splitIntoKnownWordsKanjiOnly(
  * - Unknown tokens are NOT kept (they must not be persisted as "words").
  */
 export async function extractKanjiAndWordsWithCountsSmart(text: string): Promise<ExtractionWithCountsResult> {
-  const base = extractKanjiAndWords(text);
+  const normalizedText = normalizeJapaneseSpacing(text);
+  const base = extractKanjiAndWords(normalizedText);
 
   // Cache dictionary lookups within this run.
   const knownCache = new Map<string, boolean>();
@@ -289,11 +312,11 @@ export async function extractKanjiAndWordsWithCountsSmart(text: string): Promise
   const words = Array.from(finalWordsSet).filter(Boolean);
 
   const kanjiCounts: Record<string, number> = {};
-  for (const [k, n] of countKanjiOccurrences(text).entries()) {
+  for (const [k, n] of countKanjiOccurrences(normalizedText).entries()) {
     kanjiCounts[k] = n;
   }
 
-  const wordCounts = countOccurrencesForWords(text, words);
+  const wordCounts = countOccurrencesForWords(normalizedText, words);
 
   return {
     kanji: base.kanji,

@@ -29,7 +29,6 @@ import {
   initDatabase,
   savePhoto,
   getKanjiList,
-  getWordsList,
   getPhotosForKanji,
   getPhotosForWord,
   deletePhoto,
@@ -41,16 +40,19 @@ import {
   hideKanji,
   hideWord,
   getHiddenKanjiList,
-  getHiddenWordsList,
   unhideKanji,
   unhideWord,
   getAllPhotos,
+  getWordGroupsList,
+  getHiddenWordGroupsList,
+  backfillWordDisplayBatch,
 } from '../../services/database';
 import { savePhotoToStorage, deletePhotoFromStorage } from '../../services/photoStorage';
 import { processImage } from '../../services/ocr';
 import { extractKanjiAndWordsWithCountsSmart, isKanji } from '../../utils/kanjiExtractor';
 import { getPreference, setPreference } from '../../utils/preferences';
-import { lookupKanjiNormalized, lookupWordFlexible } from '../../services/dictionary';
+import { lookupKanjiNormalized, lookupWordFlexible, lookupKanjiBatch, lookupWordBatch } from '../../services/dictionary';
+import { ensureDictionarySqliteStarted } from '../../services/dictionarySqlite';
 import { useUiBusy } from '../hooks';
 
 interface NavHistoryEntry {
@@ -174,6 +176,7 @@ interface AppContextType {
   saveEditForPhoto: () => Promise<void>;
   applyEditsForPhoto: (photo: PhotoEntry, kanji: string[], words: string[]) => Promise<void>;
   reprocessPhoto: (photo: PhotoEntry) => Promise<void>;
+  deletePhotos: (photos: PhotoEntry[]) => Promise<void>;
   onDeletePhoto: (photo: PhotoEntry) => void;
   captureFromCamera: (photoType: PhotoType) => Promise<void>;
   pickFromGallery: (photoType: PhotoType) => Promise<void>;
@@ -207,10 +210,11 @@ export function useListContext() {
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [screen, setScreen] = useState<Screen>('list');
   const [items, setItems] = useState<ListItem[]>([]);
+  const itemsRef = useRef<ListItem[]>([]);
   const navHistoryRef = useRef<NavHistoryEntry[]>([]);
   const screenRef = useRef<Screen>('list');
   const detailRef = useRef<DetailInfo | null>(null);
-  const [sortMethod, setSortMethodState] = useState<SortMethod>('gap');
+  const [sortMethod, setSortMethodState] = useState<SortMethod>('priority');
   const [sortDir, setSortDirState] = useState<SortDir>('desc');
   const [filterType, setFilterType] = useState<FilterType>('kanji');
   const [searchQuery, setSearchQuery] = useState('');
@@ -263,24 +267,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const ensureMetaForKeys = useCallback(
     async (keys: string[]) => {
       const uniq = Array.from(new Set(keys.filter(Boolean)));
-      const missing = uniq.filter((k) => !metaCache[k]);
+      const missing = uniq.filter((k) => !metaCache[k]).slice(0, 200);
       if (!missing.length) return;
 
-      const additions: Record<string, MetaCacheEntry> = {};
-      let processed = 0;
-      for (const key of missing.slice(0, 200)) {
+      // Split into kanji and word keys
+      const kanjiChars: string[] = [];
+      const wordDisplays: string[] = [];
+      for (const key of missing) {
         const [type, display] = key.split(':', 2) as [ItemType, string];
-        if (type === 'kanji') {
-          const info = await lookupKanjiNormalized(display);
-          const meaning = info?.meanings?.filter(Boolean).join(', ');
-          additions[key] = { meaning: meaning || undefined };
-        } else {
-          const info = await lookupWordFlexible(display);
-          const meaning = info?.meaning?.filter(Boolean).join(', ');
-          additions[key] = { meaning: meaning || undefined, reading: info?.reading || undefined };
-        }
-        processed++;
-        if (processed % 10 === 0) await new Promise((r) => setTimeout(r, 0));
+        if (type === 'kanji') kanjiChars.push(display);
+        else wordDisplays.push(display);
+      }
+
+      // Batch lookup in parallel
+      const [kanjiMap, wordMap] = await Promise.all([
+        lookupKanjiBatch(kanjiChars),
+        lookupWordBatch(wordDisplays),
+      ]);
+
+      const additions: Record<string, MetaCacheEntry> = {};
+      for (const ch of kanjiChars) {
+        const info = kanjiMap.get(ch);
+        const meaning = info?.meanings?.filter(Boolean).join(', ');
+        const onyomi = info?.readings?.onyomi?.join(', ');
+        const kunyomi = info?.readings?.kunyomi?.join(', ');
+        additions[`kanji:${ch}`] = { meaning: meaning || undefined, onyomi: onyomi || undefined, kunyomi: kunyomi || undefined };
+      }
+      for (const w of wordDisplays) {
+        const info = wordMap.get(w);
+        const meaning = info?.meaning?.filter(Boolean).join(', ');
+        additions[`word:${w}`] = { meaning: meaning || undefined, reading: info?.reading || undefined };
       }
 
       if (Object.keys(additions).length) {
@@ -293,6 +309,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     screenRef.current = screen;
   }, [screen]);
+
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
 
   useEffect(() => {
     detailRef.current = detail;
@@ -375,6 +395,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     initDatabase().catch((e) => console.error(e));
   }, []);
 
+  // Start one-time SQLite dictionary build after initial mount (non-blocking).
+  useEffect(() => {
+    const t = setTimeout(() => {
+      ensureDictionarySqliteStarted().catch((e) => console.error(e));
+    }, 1500);
+    return () => clearTimeout(t);
+  }, []);
+
   // Load preferences on mount
   useEffect(() => {
     (async () => {
@@ -382,7 +410,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const savedSortDir = await getPreference('sortDir');
       const savedFilter = await getPreference('filterType');
       const savedGalleryType = await getPreference('galleryType');
-      if (savedSort === 'gap' || savedSort === 'encountered' || savedSort === 'practiced') setSortMethodState(savedSort);
+      if (savedSort === 'encountered' || savedSort === 'practiced' || savedSort === 'mastery' || savedSort === 'priority') setSortMethodState(savedSort);
+      if (savedSort === 'gap') setSortMethodState('priority');
       if (savedSortDir === 'asc' || savedSortDir === 'desc') setSortDirState(savedSortDir);
       if (savedFilter === 'kanji') setFilterType('kanji');
       if (savedFilter === 'word') setFilterType('word');
@@ -447,18 +476,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [ensureMetaForKeys]);
 
   const loadHiddenItems = useCallback(async () => {
-    const [hk, hw] = await Promise.all([getHiddenKanjiList(), getHiddenWordsList()]);
+    const [hk, hwg] = await Promise.all([getHiddenKanjiList(), getHiddenWordGroupsList()]);
     setHiddenKanjiItems(hk);
-    const grouped = new Map<string, Set<string>>();
-    for (const w of hw) {
-      let display = w.word;
-      const hit = await lookupWordFlexible(w.word);
-      if (hit?.word) display = hit.word;
-      const set = grouped.get(display) ?? new Set<string>();
-      set.add(w.word);
-      grouped.set(display, set);
-    }
-    setHiddenWordGroups(Array.from(grouped.entries()).map(([display, set]) => ({ display, aliases: Array.from(set) })));
+    setHiddenWordGroups(hwg);
   }, []);
 
   useEffect(() => {
@@ -468,22 +488,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [loadHiddenItems, screen]);
 
   const reloadList = useCallback(async () => {
-    setLoading(true);
+    const isInitial = itemsRef.current.length === 0;
+    if (isInitial) setLoading(true);
     const kanji = await getKanjiList();
-    const words = await getWordsList();
-    const groupedWords = new Map<string, { encounter: number; practice: number; aliases: Set<string> }>();
-    for (const w of words) {
-      let display = w.word;
-      const hit = await lookupWordFlexible(w.word);
-      if (hit?.word) display = hit.word;
-      const g = groupedWords.get(display) ?? { encounter: 0, practice: 0, aliases: new Set<string>() };
-      g.encounter += w.encounter_count;
-      g.practice += w.practice_count;
-      g.aliases.add(w.word);
-      groupedWords.set(display, g);
-    }
+    const wordGroups = await getWordGroupsList();
 
-    const combined: ListItem[] = [
+    const nextItems: ListItem[] = [
       ...kanji.map((k) => ({
         type: 'kanji' as const,
         key: `kanji:${k.character}`,
@@ -491,18 +501,80 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         encounter_count: k.encounter_count,
         practice_count: k.practice_count,
       })),
-      ...Array.from(groupedWords.entries()).map(([display, g]) => ({
+      ...wordGroups.map((g) => ({
         type: 'word' as const,
-        key: `word:${display}`,
-        display,
-        encounter_count: g.encounter,
-        practice_count: g.practice,
-        wordAliases: Array.from(g.aliases),
+        key: `word:${g.display}`,
+        display: g.display,
+        encounter_count: g.encounter_count,
+        practice_count: g.practice_count,
+        wordAliases: g.aliases,
       })),
     ];
-    setItems(combined);
-    setLoading(false);
-  }, []);
+
+    // Ensure meanings/readings exist for the initial/top viewport BEFORE swapping the list,
+    // so items never render without meanings.
+    const dir = sortDir === 'desc' ? 1 : -1;
+    const cmp = (a: ListItem, b: ListItem) => {
+      if (sortMethod === 'encountered') return (b.encounter_count - a.encounter_count) * dir;
+      if (sortMethod === 'practiced') return (b.practice_count - a.practice_count) * dir;
+      if (sortMethod === 'mastery' || sortMethod === 'priority') {
+        const k = 10;
+        const aSeen = a.encounter_count;
+        const bSeen = b.encounter_count;
+        if (aSeen === 0 && bSeen !== 0) return 1;
+        if (bSeen === 0 && aSeen !== 0) return -1;
+        if (aSeen === 0 && bSeen === 0) return (b.practice_count - a.practice_count) * dir;
+        const wA = Math.log(1 + aSeen);
+        const wB = Math.log(1 + bSeen);
+        const rA = a.practice_count / (aSeen + k);
+        const rB = b.practice_count / (bSeen + k);
+        const aVal = sortMethod === 'mastery' ? wA * rA : wA * (1 - rA);
+        const bVal = sortMethod === 'mastery' ? wB * rB : wB * (1 - rB);
+        if (bVal !== aVal) return (bVal - aVal) * dir;
+        if (sortMethod === 'mastery' && a.practice_count === 0 && b.practice_count === 0) return bSeen - aSeen;
+        return (b.encounter_count - a.encounter_count) * dir;
+      }
+      return 0;
+    };
+
+    const nextKanjiTop = nextItems
+      .filter((i) => i.type === 'kanji')
+      .sort(cmp)
+      .slice(0, 40)
+      .map((i) => `kanji:${i.display}`);
+    const nextWordTop = nextItems
+      .filter((i) => i.type === 'word')
+      .sort(cmp)
+      .slice(0, 40)
+      .map((i) => `word:${i.display}`);
+
+    await ensureMetaForKeys([...nextKanjiTop, ...nextWordTop]);
+
+    setItems(nextItems);
+    if (isInitial) setLoading(false);
+  }, [ensureMetaForKeys, sortDir, sortMethod]);
+
+  // One-time backfill for existing installs: populate cached word display values in small batches.
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(() => {
+      (async () => {
+        // Limit work per tick; loop until no more rows need backfill.
+        while (!cancelled) {
+          const n = await backfillWordDisplayBatch(150);
+          if (n <= 0) break;
+          await new Promise((r) => setTimeout(r, 0));
+        }
+        if (!cancelled) {
+          await reloadList();
+        }
+      })().catch((e) => console.error(e));
+    }, 2500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [reloadList]);
 
   const reloadGallery = useCallback(async () => {
     setGalleryLoading(true);
@@ -561,10 +633,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const dir = sortDir === 'desc' ? 1 : -1;
         if (sortMethod === 'encountered') return (b.encounter_count - a.encounter_count) * dir;
         if (sortMethod === 'practiced') return (b.practice_count - a.practice_count) * dir;
-        const gapA = a.encounter_count - a.practice_count;
-        const gapB = b.encounter_count - b.practice_count;
-        if (gapB !== gapA) return (gapB - gapA) * dir;
-        return (b.encounter_count - a.encounter_count) * dir;
+        if (sortMethod === 'mastery' || sortMethod === 'priority') {
+          const k = 10;
+          const aSeen = a.encounter_count;
+          const bSeen = b.encounter_count;
+          if (aSeen === 0 && bSeen !== 0) return 1;
+          if (bSeen === 0 && aSeen !== 0) return -1;
+          if (aSeen === 0 && bSeen === 0) return (b.practice_count - a.practice_count) * dir;
+          const wA = Math.log(1 + aSeen);
+          const wB = Math.log(1 + bSeen);
+          const rA = a.practice_count / (aSeen + k);
+          const rB = b.practice_count / (bSeen + k);
+          const aVal = sortMethod === 'mastery' ? wA * rA : wA * (1 - rA);
+          const bVal = sortMethod === 'mastery' ? wB * rB : wB * (1 - rB);
+          if (bVal !== aVal) return (bVal - aVal) * dir;
+          if (sortMethod === 'mastery' && a.practice_count === 0 && b.practice_count === 0) return bSeen - aSeen;
+          return (b.encounter_count - a.encounter_count) * dir;
+        }
+        return 0;
       });
       return sorted;
     };
@@ -585,10 +671,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const dir = sortDir === 'desc' ? 1 : -1;
       if (sortMethod === 'encountered') return (b.encounter_count - a.encounter_count) * dir;
       if (sortMethod === 'practiced') return (b.practice_count - a.practice_count) * dir;
-      const gapA = a.encounter_count - a.practice_count;
-      const gapB = b.encounter_count - b.practice_count;
-      if (gapB !== gapA) return (gapB - gapA) * dir;
-      return (b.encounter_count - a.encounter_count) * dir;
+      if (sortMethod === 'mastery' || sortMethod === 'priority') {
+        const k = 10;
+        const aSeen = a.encounter_count;
+        const bSeen = b.encounter_count;
+        if (aSeen === 0 && bSeen !== 0) return 1;
+        if (bSeen === 0 && aSeen !== 0) return -1;
+        if (aSeen === 0 && bSeen === 0) return (b.practice_count - a.practice_count) * dir;
+        const wA = Math.log(1 + aSeen);
+        const wB = Math.log(1 + bSeen);
+        const rA = a.practice_count / (aSeen + k);
+        const rB = b.practice_count / (bSeen + k);
+        const aVal = sortMethod === 'mastery' ? wA * rA : wA * (1 - rA);
+        const bVal = sortMethod === 'mastery' ? wB * rB : wB * (1 - rB);
+        if (bVal !== aVal) return (bVal - aVal) * dir;
+        if (sortMethod === 'mastery' && a.practice_count === 0 && b.practice_count === 0) return bSeen - aSeen;
+        return (b.encounter_count - a.encounter_count) * dir;
+      }
+      return 0;
     });
   }, [normalizedQuery, filteredSortedByType.kanji, filteredSortedByType.word, sortMethod, sortDir]);
 
@@ -1080,31 +1180,54 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [detail, ensureMetaForKeys, fullImagePhoto?.id, loadPhotosForDetail, reloadGallery, reloadList, screen]
   );
 
-  const onDeletePhoto = useCallback((photo: PhotoEntry) => {
-    Alert.alert('Delete photo', 'Delete this photo and update counts?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
+  const deletePhotos = useCallback(
+    async (photos: PhotoEntry[]) => {
+      if (!photos.length) return;
+      const count = photos.length;
+      await runWithUiBusy(`Deleting ${count} photo${count === 1 ? '' : 's'}…`, async () => {
+        // Delete sequentially to keep DB/storage operations simple and predictable.
+        for (const photo of photos) {
           await deletePhoto(photo.id);
           await deletePhotoFromStorage(photo.uri);
-          if (editModal.photo?.id === photo.id) setEditModal({ visible: false, photo: null, kanjiText: '', wordsText: '' });
-          if (fullImagePhoto?.id === photo.id) {
-            setFullImageMenuVisible(false);
-            setFullImagePhoto(null);
-            setFullImageMeta(null);
-          }
-          if (screen === 'gallery') await reloadGallery();
-          if (screen === 'detail' && detail) {
-            const photos = await loadPhotosForDetail(detail);
-            setDetailPhotos(photos);
-          }
-          await reloadList();
+        }
+
+        // Close modals if they reference a deleted photo.
+        if (editModal.photo?.id && photos.some((p) => p.id === editModal.photo?.id)) {
+          setEditModal({ visible: false, photo: null, kanjiText: '', wordsText: '' });
+        }
+        if (fullImagePhoto?.id && photos.some((p) => p.id === fullImagePhoto?.id)) {
+          setFullImageMenuVisible(false);
+          setFullImagePhoto(null);
+          setFullImageMeta(null);
+        }
+
+        // Refresh list/gallery/detail views that depend on photos and counts.
+        if (screen === 'gallery') await reloadGallery();
+        if (screen === 'detail' && detail) {
+          const nextPhotos = await loadPhotosForDetail(detail);
+          setDetailPhotos(nextPhotos);
+        }
+        await reloadList();
+      });
+    },
+    [detail, editModal.photo, fullImagePhoto, loadPhotosForDetail, reloadGallery, reloadList, runWithUiBusy, screen]
+  );
+
+  const onDeletePhoto = useCallback(
+    (photo: PhotoEntry) => {
+      Alert.alert('Delete photo', 'Delete this photo and update counts?', [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            await deletePhotos([photo]);
+          },
         },
-      },
-    ]);
-  }, [detail, editModal.photo, fullImagePhoto, loadPhotosForDetail, reloadGallery, reloadList, screen]);
+      ]);
+    },
+    [deletePhotos]
+  );
 
   // Camera/gallery permissions
   const requestCameraPerms = useCallback(async () => {
@@ -1354,6 +1477,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     saveEditForPhoto,
     applyEditsForPhoto,
     reprocessPhoto,
+    deletePhotos,
     onDeletePhoto,
     captureFromCamera,
     pickFromGallery,

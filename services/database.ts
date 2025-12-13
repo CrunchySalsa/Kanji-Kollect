@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import { lookupWordFlexible } from './dictionary';
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let initPromise: Promise<void> | null = null;
@@ -36,6 +37,13 @@ async function ensureInitialized(): Promise<SQLite.SQLiteDatabase> {
   const database = await openDb();
   if (!initPromise) {
     initPromise = (async () => {
+      // Improve concurrency and reduce transient "database is locked" errors.
+      await database.execAsync(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = NORMAL;
+      PRAGMA busy_timeout = 5000;
+      `);
+
       await database.execAsync(`
       CREATE TABLE IF NOT EXISTS photos (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,6 +99,14 @@ async function ensureInitialized(): Promise<SQLite.SQLiteDatabase> {
       };
       await ensureHiddenColumn('kanji');
       await ensureHiddenColumn('words');
+
+      // Migration: cache canonical dictionary display for word grouping.
+      const colsWords = await database.getAllAsync<{ name: string }>('PRAGMA table_info(words)');
+      const hasDisplay = colsWords.some((c) => c.name === 'display');
+      if (!hasDisplay) {
+        await database.runAsync('ALTER TABLE words ADD COLUMN display TEXT');
+      }
+      await database.runAsync('CREATE INDEX IF NOT EXISTS idx_words_display ON words(display)');
     })();
   }
   await initPromise;
@@ -401,6 +417,15 @@ export async function setPhotoWordCounts(
   const database = await ensureInitialized();
   const countColumn = photoType === 'encounter' ? 'encounter_count' : 'practice_count';
 
+  // Pre-compute canonical display outside the transaction to keep DB locks short.
+  const displayByWord: Record<string, string> = {};
+  for (const w of Object.keys(newCounts)) {
+    const n = newCounts[w] ?? 0;
+    if (n <= 0) continue;
+    const hit = await lookupWordFlexible(w);
+    displayByWord[w] = hit?.word ?? w;
+  }
+
   await database.withTransactionAsync(async () => {
     const current = await getWordCountsForPhoto(photoId);
     const allKeys = new Set([...Object.keys(current), ...Object.keys(newCounts)]);
@@ -423,11 +448,20 @@ export async function setPhotoWordCounts(
 
       const delta = newN - oldN;
       if (delta !== 0) {
+        const display = displayByWord[w] ?? w;
         await database.runAsync(
-          `INSERT INTO words (word, encounter_count, practice_count)
-           VALUES (?, ?, ?)
-           ON CONFLICT(word) DO UPDATE SET ${countColumn} = ${countColumn} + ?`,
-          [w, photoType === 'encounter' ? Math.max(delta, 0) : 0, photoType === 'practice' ? Math.max(delta, 0) : 0, delta]
+          `INSERT INTO words (word, display, encounter_count, practice_count)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(word) DO UPDATE SET
+             ${countColumn} = ${countColumn} + ?,
+             display = COALESCE(words.display, excluded.display)`,
+          [
+            w,
+            display,
+            photoType === 'encounter' ? Math.max(delta, 0) : 0,
+            photoType === 'practice' ? Math.max(delta, 0) : 0,
+            delta,
+          ]
         );
       }
 
@@ -441,4 +475,81 @@ export async function setPhotoWordCounts(
 
     await database.runAsync('DELETE FROM words WHERE encounter_count <= 0 AND practice_count <= 0');
   });
+}
+
+export async function getWordGroupsList(): Promise<
+  { display: string; encounter_count: number; practice_count: number; aliases: string[] }[]
+> {
+  const database = await ensureInitialized();
+  const sep = '\u001f';
+  const rows = await database.getAllAsync<{
+    display: string;
+    encounter_count: number;
+    practice_count: number;
+    aliases: string | null;
+  }>(
+    `
+    SELECT
+      COALESCE(display, word) AS display,
+      SUM(encounter_count) AS encounter_count,
+      SUM(practice_count) AS practice_count,
+      GROUP_CONCAT(word, '${sep}') AS aliases
+    FROM words
+    WHERE hidden = 0 OR hidden IS NULL
+    GROUP BY COALESCE(display, word)
+    ORDER BY encounter_count DESC
+    `
+  );
+  return rows.map((r) => ({
+    display: r.display,
+    encounter_count: r.encounter_count ?? 0,
+    practice_count: r.practice_count ?? 0,
+    aliases: r.aliases ? r.aliases.split(sep).filter(Boolean) : [],
+  }));
+}
+
+export async function getHiddenWordGroupsList(): Promise<{ display: string; aliases: string[] }[]> {
+  const database = await ensureInitialized();
+  const sep = '\u001f';
+  const rows = await database.getAllAsync<{ display: string; aliases: string | null }>(
+    `
+    SELECT
+      COALESCE(display, word) AS display,
+      GROUP_CONCAT(word, '${sep}') AS aliases
+    FROM words
+    WHERE hidden = 1
+    GROUP BY COALESCE(display, word)
+    ORDER BY display ASC
+    `
+  );
+  return rows.map((r) => ({
+    display: r.display,
+    aliases: r.aliases ? r.aliases.split(sep).filter(Boolean) : [],
+  }));
+}
+
+export async function backfillWordDisplayBatch(batchSize: number = 200): Promise<number> {
+  const database = await ensureInitialized();
+  const rows = await database.getAllAsync<{ word: string }>(
+    'SELECT word FROM words WHERE display IS NULL OR display = "" LIMIT ?',
+    [batchSize]
+  );
+  if (!rows.length) return 0;
+
+  const updates: Array<{ word: string; display: string }> = [];
+  for (const r of rows) {
+    const hit = await lookupWordFlexible(r.word);
+    updates.push({ word: r.word, display: hit?.word ?? r.word });
+  }
+
+  await database.withTransactionAsync(async () => {
+    for (const u of updates) {
+      await database.runAsync('UPDATE words SET display = ? WHERE word = ? AND (display IS NULL OR display = "")', [
+        u.display,
+        u.word,
+      ]);
+    }
+  });
+
+  return updates.length;
 }

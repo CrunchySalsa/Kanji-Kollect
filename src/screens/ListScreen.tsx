@@ -178,7 +178,15 @@ function ListScreenImpl() {
 
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 20 }).current;
 
-  const sortValueLabel = `${sortMethod === 'gap' ? 'Score' : sortMethod === 'encountered' ? 'Seen' : 'Practiced'} ${sortDir === 'desc' ? '▼' : '▲'}`;
+  const sortName =
+    sortMethod === 'encountered'
+      ? 'Seen'
+      : sortMethod === 'practiced'
+        ? 'Practiced'
+        : sortMethod === 'mastery'
+          ? 'Mastery'
+          : 'Priority';
+  const sortValueLabel = `${sortName} ${sortDir === 'desc' ? '▼' : '▲'}`;
 
   return (
     <>
@@ -225,7 +233,8 @@ function ListScreenImpl() {
               label="Sort"
               valueLabel={sortValueLabel}
               options={[
-                { key: 'gap', label: 'Score' },
+                { key: 'priority', label: 'Priority' },
+                { key: 'mastery', label: 'Mastery' },
                 { key: 'encountered', label: 'Seen' },
                 { key: 'practiced', label: 'Practiced' },
               ]}
@@ -236,7 +245,10 @@ function ListScreenImpl() {
       </View>
 
       {loading ? (
-        <EmptyState loading message="" />
+        // Allow bottom buttons to remain tappable even during initial load.
+        <View style={{ flex: 1 }} pointerEvents="none">
+          <EmptyState loading message="" />
+        </View>
       ) : normalizedQuery ? (
         <FlatList
           ref={searchListRef}

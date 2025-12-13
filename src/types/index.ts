@@ -1,7 +1,7 @@
 import { PhotoEntry, KanjiEntry, WordEntry } from '../../services/database';
 
 export type ItemType = 'kanji' | 'word';
-export type SortMethod = 'gap' | 'encountered' | 'practiced';
+export type SortMethod = 'encountered' | 'practiced' | 'mastery' | 'priority';
 export type SortDir = 'desc' | 'asc';
 export type FilterType = 'kanji' | 'word';
 export type GalleryType = 'encounter' | 'practice';

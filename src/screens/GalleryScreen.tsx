@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from 'react';
-import { View, Text, FlatList, Animated, Dimensions } from 'react-native';
+import React, { useState, useCallback, useMemo } from 'react';
+import { View, Text, FlatList, Animated, Dimensions, TouchableOpacity, Alert } from 'react-native';
 import { styles } from '../styles/theme';
 import { useAppContext } from '../context/AppContext';
 import { useSwipePager } from '../hooks';
@@ -13,10 +13,24 @@ export function GalleryScreen() {
     allPhotos,
     galleryLoading,
     openFullImage,
-    onDeletePhoto,
+    deletePhotos,
   } = useAppContext();
 
   const [galleryWidth, setGalleryWidth] = useState(() => Dimensions.get('window').width);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
+
+  const selectionActive = selectedIds.size > 0;
+
+  const toggleSelected = useCallback((id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
 
   const galleryActiveIndex = galleryType === 'encounter' ? 0 : 1;
 
@@ -38,11 +52,32 @@ export function GalleryScreen() {
   const encounterPhotos = allPhotos.filter((p) => p.type === 'encounter');
   const practicePhotos = allPhotos.filter((p) => p.type === 'practice');
 
+  const selectedPhotos = useMemo(() => {
+    if (!selectedIds.size) return [];
+    return allPhotos.filter((p) => selectedIds.has(p.id));
+  }, [allPhotos, selectedIds]);
+
+  const handleDeleteSelected = useCallback(() => {
+    if (!selectedPhotos.length) return;
+    const count = selectedPhotos.length;
+    Alert.alert('Delete photos', `Delete ${count} photo${count === 1 ? '' : 's'} and update counts?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          await deletePhotos(selectedPhotos);
+          clearSelection();
+        },
+      },
+    ]);
+  }, [clearSelection, deletePhotos, selectedPhotos]);
+
   return (
     <View style={{ flex: 1 }}>
       <View style={styles.detailHeader}>
         <Text style={styles.detailTitle}>Gallery</Text>
-        <Text style={styles.mutedSmall}>Tap to view. Long-press to delete.</Text>
+        <Text style={styles.mutedSmall}>{selectionActive ? `Selected: ${selectedIds.size}` : 'Tap to view. Long-press to select.'}</Text>
         <View style={{ flexDirection: 'row', marginTop: 10 }}>
           <SegmentedToggle
             options={[
@@ -53,6 +88,17 @@ export function GalleryScreen() {
             onChange={setGalleryType}
           />
         </View>
+
+        {selectionActive ? (
+          <View style={{ flexDirection: 'row', marginTop: 10, gap: 10 }}>
+            <TouchableOpacity style={[styles.modalBtn, styles.modalCancel, { flex: 1 }]} onPress={clearSelection}>
+              <Text style={styles.modalBtnText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.modalBtn, styles.modalDanger, { flex: 1 }]} onPress={handleDeleteSelected}>
+              <Text style={styles.modalBtnText}>Delete ({selectedIds.size})</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
       </View>
 
       {galleryLoading ? (
@@ -86,8 +132,9 @@ export function GalleryScreen() {
                   renderItem={({ item }) => (
                     <PhotoThumbnail
                       photo={item}
-                      onPress={() => openFullImage(item)}
-                      onLongPress={() => onDeletePhoto(item)}
+                      selected={selectedIds.has(item.id)}
+                      onPress={() => (selectionActive ? toggleSelected(item.id) : openFullImage(item))}
+                      onLongPress={() => toggleSelected(item.id)}
                     />
                   )}
                 />
@@ -106,8 +153,9 @@ export function GalleryScreen() {
                   renderItem={({ item }) => (
                     <PhotoThumbnail
                       photo={item}
-                      onPress={() => openFullImage(item)}
-                      onLongPress={() => onDeletePhoto(item)}
+                      selected={selectedIds.has(item.id)}
+                      onPress={() => (selectionActive ? toggleSelected(item.id) : openFullImage(item))}
+                      onLongPress={() => toggleSelected(item.id)}
                     />
                   )}
                 />

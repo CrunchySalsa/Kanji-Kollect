@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { styles } from '../styles/theme';
@@ -43,15 +43,23 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
     setFullImageMeta,
     fullImageMenuVisible,
     setFullImageMenuVisible,
+    fullImageMenuTab,
+    setFullImageMenuTab,
+    fullImageMenuScrollY,
+    setFullImageMenuScrollY,
     metaCache,
     openDetail,
     openGallery,
     openEditForPhoto,
     saveEditForPhoto,
+    applyEditsForPhoto,
+    reprocessPhoto,
     onDeletePhoto,
     captureFromCamera,
     pickFromGallery,
   } = useAppContext();
+
+  const [reprocessBusy, setReprocessBusy] = useState(false);
 
   useEffect(() => {
     onOpenSettings(setScreen);
@@ -128,14 +136,39 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
     setFullImageMenuVisible((v) => !v);
   }, [setFullImageMenuVisible]);
 
-  const handleEditFromFullImage = useCallback(async () => {
+  const handleReprocessFromFullImage = useCallback(async () => {
     if (!fullImagePhoto) return;
-    const p = fullImagePhoto;
-    setFullImageMenuVisible(false);
-    setFullImagePhoto(null);
-    setFullImageMeta(null);
-    await openEditForPhoto(p);
-  }, [fullImagePhoto, openEditForPhoto, setFullImageMenuVisible, setFullImagePhoto, setFullImageMeta]);
+    setReprocessBusy(true);
+    try {
+      await reprocessPhoto(fullImagePhoto);
+    } finally {
+      setReprocessBusy(false);
+    }
+  }, [fullImagePhoto, reprocessPhoto]);
+
+  const handleOpenKanjiFromFullImage = useCallback(
+    (k: string) => {
+      if (!k) return;
+      openDetail('kanji', k);
+    },
+    [openDetail]
+  );
+
+  const handleOpenWordFromFullImage = useCallback(
+    (w: string) => {
+      if (!w) return;
+      openDetail('word', w);
+    },
+    [openDetail]
+  );
+
+  const handleApplyEditsFromFullImage = useCallback(
+    async (next: { kanji: string[]; words: string[] }) => {
+      if (!fullImagePhoto) return;
+      await applyEditsForPhoto(fullImagePhoto, next.kanji, next.words);
+    },
+    [applyEditsForPhoto, fullImagePhoto]
+  );
 
   const handleSelectKanjiFromModal = useCallback(
     (k: string) => {
@@ -180,10 +213,19 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
       <FullImageModal
         photo={fullImagePhoto}
         meta={fullImageMeta}
+        metaCache={metaCache}
         menuVisible={fullImageMenuVisible}
+        reprocessBusy={reprocessBusy}
+        menuTab={fullImageMenuTab}
+        onMenuTabChange={setFullImageMenuTab}
+        scrollY={fullImageMenuScrollY}
+        onScrollYChange={setFullImageMenuScrollY}
         onClose={handleCloseFullImage}
         onToggleMenu={handleToggleFullImageMenu}
-        onEdit={handleEditFromFullImage}
+        onReprocess={handleReprocessFromFullImage}
+        onApplyEdits={handleApplyEditsFromFullImage}
+        onOpenKanji={handleOpenKanjiFromFullImage}
+        onOpenWord={handleOpenWordFromFullImage}
         onDelete={() => fullImagePhoto && onDeletePhoto(fullImagePhoto)}
       />
 

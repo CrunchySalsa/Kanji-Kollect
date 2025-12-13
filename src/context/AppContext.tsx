@@ -48,7 +48,7 @@ import {
 } from '../../services/database';
 import { savePhotoToStorage, deletePhotoFromStorage } from '../../services/photoStorage';
 import { processImage } from '../../services/ocr';
-import { extractKanjiAndWordsWithCounts, isKanji } from '../../utils/kanjiExtractor';
+import { extractKanjiAndWordsWithCountsSmart, isKanji } from '../../utils/kanjiExtractor';
 import { getPreference, setPreference } from '../../utils/preferences';
 import { lookupKanjiNormalized, lookupWordFlexible } from '../../services/dictionary';
 import { useUiBusy } from '../hooks';
@@ -56,6 +56,13 @@ import { useUiBusy } from '../hooks';
 interface NavHistoryEntry {
   screen: Screen;
   detail: DetailInfo | null;
+  fullImageSnapshot?: {
+    photo: PhotoEntry | null;
+    meta: FullImageMeta | null;
+    menuVisible: boolean;
+    menuTab: 'kanji' | 'word';
+    scrollY: { kanji: number; word: number };
+  };
   detailSnapshot?: {
     detailPhotos: PhotoEntry[];
     detailKanjiInfo: KanjiInfo | null;
@@ -80,6 +87,7 @@ interface ListContextType {
   combinedSearchResults: ListItem[];
   normalizedQuery: string;
   metaCache: Record<string, MetaCacheEntry>;
+  setListViewportStart: (which: 'kanji' | 'word' | 'search', startIndex: number) => void;
   openDetail: (type: ItemType, id: string, wordAliases?: string[]) => Promise<void>;
   reloadList: () => Promise<void>;
   setCaptureModal: React.Dispatch<React.SetStateAction<CaptureModalState>>;
@@ -139,6 +147,10 @@ interface AppContextType {
   setFullImageMeta: React.Dispatch<React.SetStateAction<FullImageMeta | null>>;
   fullImageMenuVisible: boolean;
   setFullImageMenuVisible: React.Dispatch<React.SetStateAction<boolean>>;
+  fullImageMenuTab: 'kanji' | 'word';
+  setFullImageMenuTab: React.Dispatch<React.SetStateAction<'kanji' | 'word'>>;
+  fullImageMenuScrollY: { kanji: number; word: number };
+  setFullImageMenuScrollY: React.Dispatch<React.SetStateAction<{ kanji: number; word: number }>>;
 
   // Processing state
   processing: boolean;
@@ -157,6 +169,8 @@ interface AppContextType {
   openFullImage: (photo: PhotoEntry) => Promise<void>;
   openEditForPhoto: (photo: PhotoEntry) => Promise<void>;
   saveEditForPhoto: () => Promise<void>;
+  applyEditsForPhoto: (photo: PhotoEntry, kanji: string[], words: string[]) => Promise<void>;
+  reprocessPhoto: (photo: PhotoEntry) => Promise<void>;
   onDeletePhoto: (photo: PhotoEntry) => void;
   captureFromCamera: (photoType: PhotoType) => Promise<void>;
   pickFromGallery: (photoType: PhotoType) => Promise<void>;
@@ -199,6 +213,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [metaCache, setMetaCache] = useState<Record<string, MetaCacheEntry>>({});
+  const [listViewportStart, setListViewportStartState] = useState({ kanji: 0, word: 0, search: 0 });
 
   const [detail, setDetail] = useState<DetailInfo | null>(null);
   const [detailPhotos, setDetailPhotos] = useState<PhotoEntry[]>([]);
@@ -221,6 +236,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [fullImagePhoto, setFullImagePhoto] = useState<PhotoEntry | null>(null);
   const [fullImageMeta, setFullImageMeta] = useState<FullImageMeta | null>(null);
   const [fullImageMenuVisible, setFullImageMenuVisible] = useState(false);
+  const [fullImageMenuTab, setFullImageMenuTab] = useState<'kanji' | 'word'>('kanji');
+  const [fullImageMenuScrollY, setFullImageMenuScrollY] = useState<{ kanji: number; word: number }>({ kanji: 0, word: 0 });
+  const fullImagePhotoRef = useRef<PhotoEntry | null>(null);
+  const fullImageMetaRef = useRef<FullImageMeta | null>(null);
+  const fullImageMenuVisibleRef = useRef(false);
+  const fullImageMenuTabRef = useRef<'kanji' | 'word'>('kanji');
+  const fullImageMenuScrollYRef = useRef<{ kanji: number; word: number }>({ kanji: 0, word: 0 });
   const [editModal, setEditModal] = useState<EditModalState>({ visible: false, photo: null, kanjiText: '', wordsText: '' });
   const [captureModal, setCaptureModal] = useState<CaptureModalState>({ visible: false, photoType: null });
 
@@ -231,6 +253,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [hiddenWordGroups, setHiddenWordGroups] = useState<{ display: string; aliases: string[] }[]>([]);
 
   const { uiBusy, uiBusyLabel, runWithUiBusy } = useUiBusy();
+
+  const ensureMetaForKeys = useCallback(
+    async (keys: string[]) => {
+      const uniq = Array.from(new Set(keys.filter(Boolean)));
+      const missing = uniq.filter((k) => !metaCache[k]);
+      if (!missing.length) return;
+
+      const additions: Record<string, MetaCacheEntry> = {};
+      let processed = 0;
+      for (const key of missing.slice(0, 200)) {
+        const [type, display] = key.split(':', 2) as [ItemType, string];
+        if (type === 'kanji') {
+          const info = await lookupKanjiNormalized(display);
+          const meaning = info?.meanings?.filter(Boolean).join(', ');
+          additions[key] = { meaning: meaning || undefined };
+        } else {
+          const info = await lookupWordFlexible(display);
+          const meaning = info?.meaning?.filter(Boolean).join(', ');
+          additions[key] = { meaning: meaning || undefined, reading: info?.reading || undefined };
+        }
+        processed++;
+        if (processed % 10 === 0) await new Promise((r) => setTimeout(r, 0));
+      }
+
+      if (Object.keys(additions).length) {
+        setMetaCache((prev) => ({ ...prev, ...additions }));
+      }
+    },
+    [metaCache]
+  );
 
   useEffect(() => {
     screenRef.current = screen;
@@ -264,10 +316,39 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     wordKanjiModalRef.current = wordKanjiModal;
   }, [wordKanjiModal]);
 
+  useEffect(() => {
+    fullImagePhotoRef.current = fullImagePhoto;
+  }, [fullImagePhoto]);
+
+  useEffect(() => {
+    fullImageMetaRef.current = fullImageMeta;
+  }, [fullImageMeta]);
+
+  useEffect(() => {
+    fullImageMenuVisibleRef.current = fullImageMenuVisible;
+  }, [fullImageMenuVisible]);
+
+  useEffect(() => {
+    fullImageMenuTabRef.current = fullImageMenuTab;
+  }, [fullImageMenuTab]);
+
+  useEffect(() => {
+    fullImageMenuScrollYRef.current = fullImageMenuScrollY;
+  }, [fullImageMenuScrollY]);
+
   const captureNavEntry = useCallback((): NavHistoryEntry => {
     const currentScreen = screenRef.current;
     const currentDetail = detailRef.current;
     const entry: NavHistoryEntry = { screen: currentScreen, detail: currentDetail };
+
+    // Preserve full-image overlay state (so Back can restore it after navigating away).
+    entry.fullImageSnapshot = {
+      photo: fullImagePhotoRef.current,
+      meta: fullImageMetaRef.current,
+      menuVisible: fullImageMenuVisibleRef.current,
+      menuTab: fullImageMenuTabRef.current,
+      scrollY: fullImageMenuScrollYRef.current,
+    };
 
     if (currentScreen === 'detail' && currentDetail) {
       entry.detailSnapshot = {
@@ -336,6 +417,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const prev = history.pop()!;
     setScreen(prev.screen);
     setDetail(prev.detail);
+    if (prev.fullImageSnapshot) {
+      setFullImagePhoto(prev.fullImageSnapshot.photo);
+      setFullImageMeta(prev.fullImageSnapshot.meta);
+      setFullImageMenuVisible(prev.fullImageSnapshot.menuVisible);
+      setFullImageMenuTab(prev.fullImageSnapshot.menuTab);
+      setFullImageMenuScrollY(prev.fullImageSnapshot.scrollY);
+      const kanji = prev.fullImageSnapshot.meta?.kanji ?? [];
+      const words = prev.fullImageSnapshot.meta?.words ?? [];
+      if (kanji.length || words.length) {
+        ensureMetaForKeys([...kanji.map((k) => `kanji:${k}`), ...words.map((w) => `word:${w}`)]).catch((e) => console.error(e));
+      }
+    }
     if (prev.screen === 'detail' && prev.detailSnapshot) {
       setDetailPhotos(prev.detailSnapshot.detailPhotos);
       setDetailKanjiInfo(prev.detailSnapshot.detailKanjiInfo);
@@ -345,7 +438,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setWordKanjiModal(prev.detailSnapshot.wordKanjiModal);
     }
     return true;
-  }, []);
+  }, [ensureMetaForKeys]);
 
   const loadHiddenItems = useCallback(async () => {
     const [hk, hw] = await Promise.all([getHiddenKanjiList(), getHiddenWordsList()]);
@@ -493,10 +586,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
   }, [normalizedQuery, filteredSortedByType.kanji, filteredSortedByType.word, sortMethod, sortDir]);
 
-  // Prefetch dictionary metadata for visible items
+  const setListViewportStart = useCallback((which: 'kanji' | 'word' | 'search', startIndex: number) => {
+    const next = Math.max(0, startIndex | 0);
+    setListViewportStartState((prev) => {
+      const cur = prev[which] ?? 0;
+      // Avoid excessive updates during scroll; re-bucket roughly every 10 rows.
+      if (Math.abs(cur - next) < 10) return prev;
+      return { ...prev, [which]: next };
+    });
+  }, []);
+
+  // Prefetch dictionary metadata for items near the current viewport (per list)
   useEffect(() => {
-    const visible = filteredSorted.slice(0, 80);
-    const missingKeys = visible
+    if (normalizedQuery) return;
+
+    const start = listViewportStart.kanji ?? 0;
+    const windowed = filteredSortedByType.kanji.slice(start, start + 80);
+    const missingKeys = windowed
       .map((i) => `${i.type}:${i.display}`)
       .filter((k) => !metaCache[k]);
     if (!missingKeys.length) return;
@@ -511,17 +617,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const [type, display] = key.split(':', 2) as [ItemType, string];
         if (type === 'kanji') {
           const info = await lookupKanjiNormalized(display);
-          const meaning = info?.meanings?.[0];
+          const meaning = info?.meanings?.filter(Boolean).join(', ');
           additions[key] = {
-            meaning: meaning ?? undefined,
+            meaning: meaning || undefined,
             onyomi: info?.readings?.onyomi?.join(' ') || undefined,
             kunyomi: info?.readings?.kunyomi?.join(' ') || undefined,
           };
         } else {
           const info = await lookupWordFlexible(display);
-          const meaning = info?.meaning?.[0];
+          const meaning = info?.meaning?.filter(Boolean).join(', ');
           additions[key] = {
-            meaning: meaning ?? undefined,
+            meaning: meaning || undefined,
             reading: info?.reading || undefined,
           };
         }
@@ -541,7 +647,59 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [filteredSorted, metaCache]);
+  }, [filteredSortedByType.kanji, listViewportStart.kanji, metaCache, normalizedQuery]);
+
+  useEffect(() => {
+    if (normalizedQuery) return;
+
+    const start = listViewportStart.word ?? 0;
+    const windowed = filteredSortedByType.word.slice(start, start + 80);
+    const missingKeys = windowed
+      .map((i) => `${i.type}:${i.display}`)
+      .filter((k) => !metaCache[k]);
+    if (!missingKeys.length) return;
+
+    let cancelled = false;
+    (async () => {
+      const additions: Record<string, MetaCacheEntry> = {};
+      let processed = 0;
+
+      for (const key of missingKeys) {
+        if (cancelled) return;
+        const [type, display] = key.split(':', 2) as [ItemType, string];
+        if (type === 'kanji') {
+          const info = await lookupKanjiNormalized(display);
+          const meaning = info?.meanings?.filter(Boolean).join(', ');
+          additions[key] = {
+            meaning: meaning || undefined,
+            onyomi: info?.readings?.onyomi?.join(' ') || undefined,
+            kunyomi: info?.readings?.kunyomi?.join(' ') || undefined,
+          };
+        } else {
+          const info = await lookupWordFlexible(display);
+          const meaning = info?.meaning?.filter(Boolean).join(', ');
+          additions[key] = {
+            meaning: meaning || undefined,
+            reading: info?.reading || undefined,
+          };
+        }
+
+        processed++;
+        if (processed % 10 === 0) {
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      }
+
+      if (cancelled) return;
+      if (Object.keys(additions).length) {
+        setMetaCache((prev) => ({ ...prev, ...additions }));
+      }
+    })().catch((e) => console.error(e));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [filteredSortedByType.word, listViewportStart.word, metaCache, normalizedQuery]);
 
   // Progressively fetch metadata when searching
   useEffect(() => {
@@ -565,17 +723,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const [type, display] = key.split(':', 2) as [ItemType, string];
         if (type === 'kanji') {
           const info = await lookupKanjiNormalized(display);
-          const meaning = info?.meanings?.[0];
+          const meaning = info?.meanings?.filter(Boolean).join(', ');
           additions[key] = {
-            meaning: meaning ?? undefined,
+            meaning: meaning || undefined,
             onyomi: info?.readings?.onyomi?.join(' ') || undefined,
             kunyomi: info?.readings?.kunyomi?.join(' ') || undefined,
           };
         } else {
           const info = await lookupWordFlexible(display);
-          const meaning = info?.meaning?.[0];
+          const meaning = info?.meaning?.filter(Boolean).join(', ');
           additions[key] = {
-            meaning: meaning ?? undefined,
+            meaning: meaning || undefined,
             reading: info?.reading || undefined,
           };
         }
@@ -597,6 +755,52 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, [filterType, items, metaCache, normalizedQuery]);
 
+  // Prefetch metadata for the current search viewport (so scrolled-down results can show meanings without tapping)
+  useEffect(() => {
+    if (!normalizedQuery) return;
+
+    const start = listViewportStart.search ?? 0;
+    const windowed = combinedSearchResults.slice(start, start + 80);
+    const missingKeys = windowed.map((i) => `${i.type}:${i.display}`).filter((k) => !metaCache[k]);
+    if (!missingKeys.length) return;
+
+    let cancelled = false;
+    (async () => {
+      const additions: Record<string, MetaCacheEntry> = {};
+      let processed = 0;
+      for (const key of missingKeys) {
+        if (cancelled) return;
+        const [type, display] = key.split(':', 2) as [ItemType, string];
+        if (type === 'kanji') {
+          const info = await lookupKanjiNormalized(display);
+          const meaning = info?.meanings?.filter(Boolean).join(', ');
+          additions[key] = {
+            meaning: meaning || undefined,
+            onyomi: info?.readings?.onyomi?.join(' ') || undefined,
+            kunyomi: info?.readings?.kunyomi?.join(' ') || undefined,
+          };
+        } else {
+          const info = await lookupWordFlexible(display);
+          const meaning = info?.meaning?.filter(Boolean).join(', ');
+          additions[key] = {
+            meaning: meaning || undefined,
+            reading: info?.reading || undefined,
+          };
+        }
+
+        processed++;
+        if (processed % 10 === 0) await new Promise((r) => setTimeout(r, 0));
+      }
+
+      if (cancelled) return;
+      if (Object.keys(additions).length) setMetaCache((prev) => ({ ...prev, ...additions }));
+    })().catch((e) => console.error(e));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [combinedSearchResults, listViewportStart.search, metaCache, normalizedQuery]);
+
   // Ensure metadata for words spotted
   useEffect(() => {
     const missing = detailWordsSpotted
@@ -611,8 +815,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         const word = key.slice('word:'.length);
         const info = await lookupWordFlexible(word);
+        const meaning = info?.meaning?.filter(Boolean).join(', ');
         additions[key] = {
-          meaning: info?.meaning?.[0],
+          meaning: meaning || undefined,
           reading: info?.reading || undefined,
         };
         if (Object.keys(additions).length % 10 === 0) {
@@ -630,6 +835,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, [detailWordsSpotted, metaCache]);
 
+  // Ensure metadata for kanji shown in the "Kanji in this word" modal
+  useEffect(() => {
+    if (!wordKanjiModal.visible) return;
+    if (!wordKanjiModal.kanji.length) return;
+
+    const missing = wordKanjiModal.kanji.map((k) => `kanji:${k}`).filter((key) => !metaCache[key]);
+    if (!missing.length) return;
+
+    let cancelled = false;
+    (async () => {
+      const additions: Record<string, MetaCacheEntry> = {};
+      for (const key of missing.slice(0, 60)) {
+        if (cancelled) return;
+        const kanji = key.slice('kanji:'.length);
+        const info = await lookupKanjiNormalized(kanji);
+        const meaning = info?.meanings?.filter(Boolean).join(', ');
+        additions[key] = {
+          meaning: meaning || undefined,
+        };
+        if (Object.keys(additions).length % 10 === 0) {
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      }
+      if (cancelled) return;
+      if (Object.keys(additions).length) {
+        setMetaCache((prev) => ({ ...prev, ...additions }));
+      }
+    })().catch((e) => console.error(e));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [metaCache, wordKanjiModal.kanji, wordKanjiModal.visible]);
+
   const loadPhotosForDetail = useCallback(async (d: DetailInfo): Promise<PhotoEntry[]> => {
     if (d.type === 'kanji') return await getPhotosForKanji(d.id);
     const aliases = d.wordAliases?.length ? d.wordAliases : [d.id];
@@ -645,6 +884,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await runWithUiBusy('Loading…', async () => {
       // Push current state to history before navigating
       navHistoryRef.current.push(captureNavEntry());
+
+      // If the full-image overlay is open, close it now (it is preserved in history for Back).
+      if (fullImagePhotoRef.current) {
+        setFullImageMenuVisible(false);
+        setFullImagePhoto(null);
+        setFullImageMeta(null);
+      }
       
       setDetailLoading(true);
       setDetail({ type, id, wordAliases });
@@ -694,10 +940,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const openFullImage = useCallback(async (photo: PhotoEntry) => {
     setFullImagePhoto(photo);
     setFullImageMenuVisible(false);
+    setFullImageMenuTab('kanji');
+    setFullImageMenuScrollY({ kanji: 0, word: 0 });
     const kanji = await getKanjiForPhoto(photo.id);
     const words = await getWordsForPhoto(photo.id);
     setFullImageMeta({ kanji, words });
-  }, []);
+    ensureMetaForKeys([...kanji.map((k) => `kanji:${k}`), ...words.map((w) => `word:${w}`)]).catch((e) => console.error(e));
+  }, [ensureMetaForKeys]);
 
   const openEditForPhoto = useCallback(async (photo: PhotoEntry) => {
     const kanji = await getKanjiForPhoto(photo.id);
@@ -743,6 +992,85 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setProcessing(false);
     }
   }, [detail, editModal, loadPhotosForDetail, reloadGallery, reloadList, screen]);
+
+  const applyEditsForPhoto = useCallback(
+    async (photo: PhotoEntry, kanji: string[], words: string[]) => {
+      const kanjiCounts: Record<string, number> = {};
+      for (const ch of kanji) {
+        if (!isKanji(ch)) continue;
+        kanjiCounts[ch] = (kanjiCounts[ch] ?? 0) + 1;
+      }
+
+      const wordCounts: Record<string, number> = {};
+      for (const w of words.map((s) => s.trim()).filter(Boolean)) {
+        wordCounts[w] = (wordCounts[w] ?? 0) + 1;
+      }
+
+      setProcessing(true);
+      try {
+        await setPhotoKanjiCounts(photo.id, photo.type, kanjiCounts);
+        await setPhotoWordCounts(photo.id, photo.type, wordCounts);
+
+        await reloadList();
+        if (screen === 'gallery') await reloadGallery();
+        if (screen === 'detail' && detail) {
+          const photos = await loadPhotosForDetail(detail);
+          setDetailPhotos(photos);
+        }
+
+        const nextKanji = await getKanjiForPhoto(photo.id);
+        const nextWords = await getWordsForPhoto(photo.id);
+        if (fullImagePhoto?.id === photo.id) {
+          setFullImageMeta({ kanji: nextKanji, words: nextWords });
+          ensureMetaForKeys([...nextKanji.map((k) => `kanji:${k}`), ...nextWords.map((w) => `word:${w}`)]).catch((e) => console.error(e));
+        }
+      } finally {
+        setProcessing(false);
+      }
+    },
+    [detail, fullImagePhoto?.id, loadPhotosForDetail, reloadGallery, reloadList, screen, ensureMetaForKeys]
+  );
+
+  const reprocessPhoto = useCallback(
+    async (photo: PhotoEntry) => {
+      setProcessing(true);
+      setProcessingStatus('Reprocessing…');
+      try {
+        // Clear previous per-photo associations first.
+        await setPhotoKanjiCounts(photo.id, photo.type, {});
+        await setPhotoWordCounts(photo.id, photo.type, {});
+
+        const ocrText = await processImage(photo.uri, photo.type === 'practice');
+        const { kanjiCounts, wordCounts } = await extractKanjiAndWordsWithCountsSmart(ocrText);
+
+        if (Object.keys(kanjiCounts).length) await setPhotoKanjiCounts(photo.id, photo.type, kanjiCounts);
+        if (Object.keys(wordCounts).length) await setPhotoWordCounts(photo.id, photo.type, wordCounts);
+
+        // Refresh list/gallery/detail views that depend on counts and associations.
+        await reloadList();
+        if (screen === 'gallery') await reloadGallery();
+        if (screen === 'detail' && detail) {
+          const photos = await loadPhotosForDetail(detail);
+          setDetailPhotos(photos);
+        }
+
+        // Refresh the full image meta (if currently open).
+        const kanji = await getKanjiForPhoto(photo.id);
+        const words = await getWordsForPhoto(photo.id);
+        if (fullImagePhoto?.id === photo.id) {
+          setFullImageMeta({ kanji, words });
+          ensureMetaForKeys([...kanji.map((k) => `kanji:${k}`), ...words.map((w) => `word:${w}`)]).catch((e) => console.error(e));
+        }
+      } catch (e) {
+        console.error(e);
+        Alert.alert('Error', 'Failed to reprocess the photo.');
+      } finally {
+        setProcessing(false);
+        setProcessingStatus('Processing…');
+      }
+    },
+    [detail, ensureMetaForKeys, fullImagePhoto?.id, loadPhotosForDetail, reloadGallery, reloadList, screen]
+  );
 
   const onDeletePhoto = useCallback((photo: PhotoEntry) => {
     Alert.alert('Delete photo', 'Delete this photo and update counts?', [
@@ -795,7 +1123,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     try {
       const storedUri = await savePhotoToStorage(sourceUri);
       const ocrText = await processImage(storedUri, photoType === 'practice');
-      const { kanji, words, kanjiCounts, wordCounts } = extractKanjiAndWordsWithCounts(ocrText);
+      const { kanji, words, kanjiCounts, wordCounts } = await extractKanjiAndWordsWithCountsSmart(ocrText);
       const photoId = await savePhoto(storedUri, photoType);
       if (Object.keys(kanjiCounts).length) await setPhotoKanjiCounts(photoId, photoType, kanjiCounts);
       if (Object.keys(wordCounts).length) await setPhotoWordCounts(photoId, photoType, wordCounts);
@@ -813,20 +1141,46 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const processCapturedUris = useCallback(async (sourceUris: string[], photoType: PhotoType) => {
     if (!sourceUris.length) return;
     setProcessing(true);
+    const CONCURRENCY = 10;
     try {
+      // Phase 1: Save photos to storage
+      setProcessingStatus(`Preparing ${sourceUris.length} photos…`);
+      const storedUris: string[] = [];
+      for (const sourceUri of sourceUris) {
+        storedUris.push(await savePhotoToStorage(sourceUri));
+      }
+
+      // Phase 2: Run OCR in parallel batches
+      let ocrCompleted = 0;
+      type OcrResult = { storedUri: string; ocrText: string; kanji: string[]; words: string[]; kanjiCounts: Record<string, number>; wordCounts: Record<string, number> };
+      const allResults: OcrResult[] = [];
+
+      const runOcr = async (storedUri: string): Promise<OcrResult> => {
+        const ocrText = await processImage(storedUri, photoType === 'practice');
+        const { kanji, words, kanjiCounts, wordCounts } = await extractKanjiAndWordsWithCountsSmart(ocrText);
+        ocrCompleted++;
+        setProcessingStatus(`Running OCR ${ocrCompleted}/${storedUris.length}…`);
+        return { storedUri, ocrText, kanji, words, kanjiCounts, wordCounts };
+      };
+
+      for (let i = 0; i < storedUris.length; i += CONCURRENCY) {
+        const batch = storedUris.slice(i, i + CONCURRENCY);
+        const batchResults = await Promise.all(batch.map(runOcr));
+        allResults.push(...batchResults);
+      }
+
+      // Phase 3: Save to database sequentially
+      setProcessingStatus(`Saving to database…`);
       let totalKanji = 0;
       let totalWords = 0;
-      for (let i = 0; i < sourceUris.length; i++) {
-        setProcessingStatus(`Processing ${i + 1}/${sourceUris.length}…`);
-        const storedUri = await savePhotoToStorage(sourceUris[i]);
-        const ocrText = await processImage(storedUri, photoType === 'practice');
-        const { kanji, words, kanjiCounts, wordCounts } = extractKanjiAndWordsWithCounts(ocrText);
-        const photoId = await savePhoto(storedUri, photoType);
-        if (Object.keys(kanjiCounts).length) await setPhotoKanjiCounts(photoId, photoType, kanjiCounts);
-        if (Object.keys(wordCounts).length) await setPhotoWordCounts(photoId, photoType, wordCounts);
-        totalKanji += kanji.length;
-        totalWords += words.length;
+      for (const r of allResults) {
+        const photoId = await savePhoto(r.storedUri, photoType);
+        if (Object.keys(r.kanjiCounts).length) await setPhotoKanjiCounts(photoId, photoType, r.kanjiCounts);
+        if (Object.keys(r.wordCounts).length) await setPhotoWordCounts(photoId, photoType, r.wordCounts);
+        totalKanji += r.kanji.length;
+        totalWords += r.words.length;
       }
+
       await reloadList();
       Alert.alert('Saved', `Imported ${sourceUris.length} photos. Extracted ${totalKanji} kanji and ${totalWords} words total.`);
     } catch (e) {
@@ -860,6 +1214,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
     if (result.canceled) return;
     const uris = result.assets.map((a) => a.uri).filter(Boolean);
+    if (!uris.length) return;
+    setProcessing(true);
+    setProcessingStatus(`Loading ${uris.length} photo${uris.length > 1 ? 's' : ''}…`);
+    // Yield to allow UI to render loading state before heavy work
+    await new Promise((r) => setTimeout(r, 50));
     if (uris.length <= 1) {
       await processCapturedUri(uris[0], photoType);
     } else {
@@ -882,6 +1241,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       combinedSearchResults,
       normalizedQuery,
       metaCache,
+      setListViewportStart,
       openDetail,
       reloadList,
       setCaptureModal,
@@ -900,6 +1260,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       combinedSearchResults,
       normalizedQuery,
       metaCache,
+      setListViewportStart,
       openDetail,
       reloadList,
       setCaptureModal,
@@ -947,6 +1308,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setFullImageMeta,
     fullImageMenuVisible,
     setFullImageMenuVisible,
+    fullImageMenuTab,
+    setFullImageMenuTab,
+    fullImageMenuScrollY,
+    setFullImageMenuScrollY,
     processing,
     processingStatus,
     uiBusy,
@@ -957,6 +1322,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     openFullImage,
     openEditForPhoto,
     saveEditForPhoto,
+    applyEditsForPhoto,
+    reprocessPhoto,
     onDeletePhoto,
     captureFromCamera,
     pickFromGallery,

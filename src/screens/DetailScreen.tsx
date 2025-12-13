@@ -1,9 +1,11 @@
-import React, { useCallback, useMemo } from 'react';
-import { View, Text, TouchableOpacity, FlatList, ScrollView } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { View, Text, TouchableOpacity, ScrollView, Animated, Dimensions } from 'react-native';
 import { styles } from '../styles/theme';
 import { useAppContext } from '../context/AppContext';
 import { useSpeech } from '../hooks';
-import { PhotoThumbnail, EmptyState } from '../components';
+import { PhotoThumbnail, EmptyState, SegmentedToggle } from '../components';
+import { useSwipePager } from '../hooks';
+import { GalleryType } from '../types';
 
 export function DetailScreen() {
   const {
@@ -21,6 +23,28 @@ export function DetailScreen() {
   } = useAppContext();
 
   const { speakJa } = useSpeech();
+
+  const [photoType, setPhotoType] = useState<GalleryType>('encounter');
+  const [photosWidth, setPhotosWidth] = useState(() => Dimensions.get('window').width);
+  const photosActiveIndex = photoType === 'encounter' ? 0 : 1;
+
+  const handlePhotosIndexChange = useCallback(
+    (index: number) => {
+      const nextType: GalleryType = index === 0 ? 'encounter' : 'practice';
+      setPhotoType(nextType);
+    },
+    []
+  );
+
+  const { translateX: photosTranslateX, panResponder: photosSwipeResponder } = useSwipePager({
+    activeIndex: photosActiveIndex,
+    pageCount: 2,
+    width: photosWidth,
+    onIndexChange: handlePhotosIndexChange,
+  });
+
+  const encounterPhotos = useMemo(() => detailPhotos.filter((p) => p.type === 'encounter'), [detailPhotos]);
+  const practicePhotos = useMemo(() => detailPhotos.filter((p) => p.type === 'practice'), [detailPhotos]);
 
   const uniqueReadings = useCallback((readings: string[]) => {
     const seen = new Set<string>();
@@ -134,55 +158,69 @@ export function DetailScreen() {
           </View>
         )}
 
-        <View style={styles.detailStatsRow}>
-          <View style={styles.detailStatPill}>
-            <Text style={styles.detailStatNum}>{detailPhotos.filter((p) => p.type === 'encounter').length}</Text>
-            <Text style={styles.detailStatLabel}>Encounter photos</Text>
-          </View>
-          <View style={styles.detailStatPill}>
-            <Text style={styles.detailStatNum}>{detailPhotos.filter((p) => p.type === 'practice').length}</Text>
-            <Text style={styles.detailStatLabel}>Practice photos</Text>
-          </View>
+        <View style={{ flexDirection: 'row', marginTop: 12 }}>
+          <SegmentedToggle
+            options={[
+              { key: 'encounter', label: 'Encounters' },
+              { key: 'practice', label: 'Practice' },
+            ]}
+            value={photoType}
+            onChange={setPhotoType}
+          />
         </View>
       </View>
     );
-  }, [detail, detailKanjiInfo, detailWordInfo, detailWordsSpotted, detailPhotos, metaCache, openDetail, setWordKanjiModal, speakJa, uniqueReadings]);
-
-  const footerComponent = useMemo(() => (
-    <Text style={styles.mutedSmallCenter}>Long-press a thumbnail to delete the photo.</Text>
-  ), []);
+  }, [detail, detailKanjiInfo, detailWordInfo, detailWordsSpotted, metaCache, openDetail, photoType, setWordKanjiModal, speakJa, uniqueReadings]);
 
   if (!detail) {
     return <EmptyState message="No detail selected." />;
   }
 
-  if (detailPhotos.length === 0 && !detailLoading) {
+  const renderPhotoGrid = (photos: typeof encounterPhotos, emptyMsg: string) => {
+    if (detailLoading) return <EmptyState loading message="" />;
+    if (photos.length === 0) return <EmptyState message={emptyMsg} />;
     return (
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1 }}>
-        {headerComponent}
-        <EmptyState loading={detailLoading} message="No photos found." />
-        {footerComponent}
-      </ScrollView>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', padding: 12 }}>
+        {photos.map((item) => (
+          <PhotoThumbnail
+            key={item.id}
+            photo={item}
+            onPress={() => openFullImage(item)}
+            onLongPress={() => onDeletePhoto(item)}
+          />
+        ))}
+      </View>
     );
-  }
+  };
 
   return (
-    <FlatList
-      data={detailPhotos}
-      keyExtractor={(p) => String(p.id)}
-      numColumns={3}
-      contentContainerStyle={{ padding: 12, paddingBottom: 12 }}
-      ListHeaderComponent={headerComponent}
-      ListFooterComponent={footerComponent}
-      ListEmptyComponent={<EmptyState loading={detailLoading} message="No photos found." />}
-      renderItem={({ item }) => (
-        <PhotoThumbnail
-          photo={item}
-          onPress={() => openFullImage(item)}
-          onLongPress={() => onDeletePhoto(item)}
-        />
-      )}
-    />
+    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 24 }}>
+      {headerComponent}
+
+      <View
+        onLayout={(e) => {
+          const w = e.nativeEvent.layout.width;
+          if (w && w !== photosWidth) setPhotosWidth(w);
+        }}
+        {...photosSwipeResponder.panHandlers}
+      >
+        <Animated.View
+          style={{
+            flexDirection: 'row',
+            width: photosWidth * 2,
+            transform: [{ translateX: photosTranslateX }],
+          }}
+        >
+          <View style={{ width: photosWidth }}>
+            {renderPhotoGrid(encounterPhotos, 'No encounter photos found.')}
+          </View>
+
+          <View style={{ width: photosWidth }}>
+            {renderPhotoGrid(practicePhotos, 'No practice photos found.')}
+          </View>
+        </Animated.View>
+      </View>
+    </ScrollView>
   );
 }
 

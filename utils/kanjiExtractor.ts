@@ -2,6 +2,8 @@
  * Utility to extract Kanji and Japanese words from OCR text.
  */
 
+import { lookupWord } from '../services/dictionary';
+
 // Unicode ranges for Japanese characters
 const KANJI_RANGE_START = 0x4e00;
 const KANJI_RANGE_END = 0x9faf;
@@ -171,6 +173,131 @@ export function extractKanjiAndWordsWithCounts(text: string): ExtractionWithCoun
 
   return {
     ...base,
+    kanjiCounts,
+    wordCounts,
+  };
+}
+
+function isAllKanji(word: string): boolean {
+  return !!word && /^[\u4e00-\u9faf]+$/.test(word);
+}
+
+function escapeForRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function countOccurrencesForWords(text: string, words: string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const w of words) {
+    if (!w) continue;
+    const re = new RegExp(escapeForRegex(w), 'g');
+    const matches = text.match(re);
+    const n = matches ? matches.length : 0;
+    if (n > 0) out[w] = n;
+  }
+  return out;
+}
+
+type SplitCandidate = { segmentsCount: number; maxLen: number; score: number; parts: string[] };
+
+function betterSplit(a: SplitCandidate, b: SplitCandidate): boolean {
+  // Prefer fewer segments. If tied, prefer longer segments (higher sum of squares).
+  if (a.segmentsCount !== b.segmentsCount) return a.segmentsCount < b.segmentsCount;
+  // Explicitly prefer the solution that contains the largest chunk.
+  if (a.maxLen !== b.maxLen) return a.maxLen > b.maxLen;
+  if (a.score !== b.score) return a.score > b.score;
+  // Stable tie-breaker: prefer the one with a longer first segment (if any).
+  const a0 = a.parts[0]?.length ?? 0;
+  const b0 = b.parts[0]?.length ?? 0;
+  return a0 > b0;
+}
+
+async function splitIntoKnownWordsKanjiOnly(
+  word: string,
+  isKnown: (w: string) => Promise<boolean>,
+  minSegmentLength: number
+): Promise<string[] | null> {
+  const n = word.length;
+  const dp: Array<SplitCandidate | null> = new Array(n + 1).fill(null);
+  dp[0] = { segmentsCount: 0, maxLen: 0, score: 0, parts: [] };
+
+  for (let i = 0; i < n; i++) {
+    const cur = dp[i];
+    if (!cur) continue;
+    for (let j = i + minSegmentLength; j <= n; j++) {
+      const seg = word.slice(i, j);
+      if (!(await isKnown(seg))) continue;
+      const segLen = seg.length;
+      const cand: SplitCandidate = {
+        segmentsCount: cur.segmentsCount + 1,
+        maxLen: Math.max(cur.maxLen, segLen),
+        score: cur.score + segLen * segLen,
+        parts: [...cur.parts, seg],
+      };
+      const existing = dp[j];
+      if (!existing || betterSplit(cand, existing)) dp[j] = cand;
+    }
+  }
+
+  const best = dp[n];
+  if (!best || best.parts.length < 2) return null;
+  return best.parts;
+}
+
+/**
+ * Like `extractKanjiAndWordsWithCounts`, but attempts to split kanji-only OCR "clumps"
+ * into known dictionary words when the clump itself is unknown (e.g. "注文依頼" -> ["注文","依頼"]).
+ *
+ * Notes:
+ * - Splitting is attempted only when the original token is NOT an exact dictionary headword.
+ * - The DP splitter is safe for mixed tokens too (e.g. "...合せ"), despite the helper name.
+ * - Unknown tokens are NOT kept (they must not be persisted as "words").
+ */
+export async function extractKanjiAndWordsWithCountsSmart(text: string): Promise<ExtractionWithCountsResult> {
+  const base = extractKanjiAndWords(text);
+
+  // Cache dictionary lookups within this run.
+  const knownCache = new Map<string, boolean>();
+  const isKnown = async (w: string): Promise<boolean> => {
+    if (!w) return false;
+    const cached = knownCache.get(w);
+    if (cached !== undefined) return cached;
+    const hit = await lookupWord(w);
+    const ok = hit !== null;
+    knownCache.set(w, ok);
+    return ok;
+  };
+
+  const finalWordsSet = new Set<string>();
+  for (const w of base.words) {
+    if (!w) continue;
+
+    if (await isKnown(w)) {
+      finalWordsSet.add(w);
+      continue;
+    }
+
+    // Try to split into known dictionary words (minimum 2 chars each, to avoid 1-char fragments).
+    const split = await splitIntoKnownWordsKanjiOnly(w, isKnown, 2);
+    if (split) {
+      for (const part of split) finalWordsSet.add(part);
+      continue;
+    }
+    // Unknown and unsplittable: drop.
+  }
+
+  const words = Array.from(finalWordsSet).filter(Boolean);
+
+  const kanjiCounts: Record<string, number> = {};
+  for (const [k, n] of countKanjiOccurrences(text).entries()) {
+    kanjiCounts[k] = n;
+  }
+
+  const wordCounts = countOccurrencesForWords(text, words);
+
+  return {
+    kanji: base.kanji,
+    words,
     kanjiCounts,
     wordCounts,
   };

@@ -33,6 +33,7 @@ function ListScreenImpl() {
     combinedSearchResults,
     normalizedQuery,
     metaCache,
+    setListViewportStart,
     openDetail,
     reloadList,
     setCaptureModal,
@@ -157,6 +158,26 @@ function ListScreenImpl() {
     [metaCache, openDetail, reloadList]
   );
 
+  const onViewableKanjiItemsChanged = useRef(({ viewableItems }: { viewableItems: Array<{ index: number | null }> }) => {
+    const idxs = viewableItems.map((v) => v.index).filter((n): n is number => typeof n === 'number');
+    if (!idxs.length) return;
+    setListViewportStart('kanji', Math.min(...idxs));
+  }).current;
+
+  const onViewableWordItemsChanged = useRef(({ viewableItems }: { viewableItems: Array<{ index: number | null }> }) => {
+    const idxs = viewableItems.map((v) => v.index).filter((n): n is number => typeof n === 'number');
+    if (!idxs.length) return;
+    setListViewportStart('word', Math.min(...idxs));
+  }).current;
+
+  const onViewableSearchItemsChanged = useRef(({ viewableItems }: { viewableItems: Array<{ index: number | null }> }) => {
+    const idxs = viewableItems.map((v) => v.index).filter((n): n is number => typeof n === 'number');
+    if (!idxs.length) return;
+    setListViewportStart('search', Math.min(...idxs));
+  }).current;
+
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 20 }).current;
+
   const sortValueLabel = `${sortMethod === 'gap' ? 'Score' : sortMethod === 'encountered' ? 'Seen' : 'Practiced'} ${sortDir === 'desc' ? '▼' : '▲'}`;
 
   return (
@@ -223,6 +244,9 @@ function ListScreenImpl() {
           keyExtractor={(it) => it.key}
           contentContainerStyle={{ paddingBottom: 96 }}
           renderItem={renderItem}
+          extraData={metaCache}
+          onViewableItemsChanged={onViewableSearchItemsChanged}
+          viewabilityConfig={viewabilityConfig}
           onScroll={handleSearchScroll}
           scrollEventThrottle={16}
           onContentSizeChange={() => restoreScrollIfNeeded('search')}
@@ -252,6 +276,9 @@ function ListScreenImpl() {
                 keyExtractor={(it) => it.key}
                 contentContainerStyle={{ paddingBottom: 96 }}
                 renderItem={renderItem}
+                extraData={metaCache}
+                onViewableItemsChanged={onViewableKanjiItemsChanged}
+                viewabilityConfig={viewabilityConfig}
                 onScroll={handleKanjiScroll}
                 scrollEventThrottle={16}
                 onContentSizeChange={() => restoreScrollIfNeeded('kanji')}
@@ -266,6 +293,9 @@ function ListScreenImpl() {
                 keyExtractor={(it) => it.key}
                 contentContainerStyle={{ paddingBottom: 96 }}
                 renderItem={renderItem}
+                extraData={metaCache}
+                onViewableItemsChanged={onViewableWordItemsChanged}
+                viewabilityConfig={viewabilityConfig}
                 onScroll={handleWordScroll}
                 scrollEventThrottle={16}
                 onContentSizeChange={() => restoreScrollIfNeeded('word')}

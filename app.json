@@ -1,13 +1,13 @@
 {
   "expo": {
-    "name": "nihongo-tracker",
-    "slug": "nihongo-tracker",
+    "name": "kanji-collect",
+    "slug": "kanji-kollect",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": false,
-    "scheme": "nihongo-tracker",
+    "scheme": "kanji-kollect",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -30,7 +30,7 @@
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE"
       ],
-      "package": "com.cxsol91.nihongotracker"
+      "package": "com.crunchysalsa.kanjikollect"
     },
     "web": {
       "favicon": "./assets/favicon.png",
@@ -41,7 +41,7 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Nihongo Tracker to access your photos to import Japanese text images."
+          "photosPermission": "Allow Kanji Kollect to access your photos to import Japanese text images."
         }
       ]
     ],

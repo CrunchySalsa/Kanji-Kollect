@@ -23,7 +23,7 @@ export function Header({ currentScreen, onNavigateToList, onNavigateToGallery }:
       >
         <Text style={styles.headerBtnText}>☰</Text>
       </TouchableOpacity>
-      <Text style={styles.headerTitle}>Nihongo Tracker</Text>
+      <Text style={styles.headerTitle}>Kanji Kollect</Text>
       <View style={styles.headerButtons}>
         {currentScreen !== 'list' && (
           <TouchableOpacity style={styles.headerBtn} onPress={onNavigateToList}>

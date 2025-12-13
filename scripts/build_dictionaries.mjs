@@ -102,7 +102,8 @@ async function buildKanjidic2(xmlPath) {
     const readingMeaning = c?.reading_meaning?.rmgroup;
     const readings = arr(readingMeaning?.reading);
     const meanings = arr(readingMeaning?.meaning)
-      .filter((m) => typeof m === 'string'); // ignore ones with attributes/lang
+      .filter((m) => typeof m === 'string') // ignore ones with attributes/lang
+      .filter((m) => !/^\d+\*\*\d+$/.test(m)); // remove scientific notation like "10**16"
 
     const onyomi = [];
     const kunyomi = [];
@@ -149,7 +150,8 @@ async function buildJmdict(xmlPath) {
     const glosses = senses
       .flatMap((s) => arr(s?.gloss))
       .map((g) => (typeof g === 'string' ? g : g?.['#text']))
-      .filter((g) => typeof g === 'string' && g.length > 0);
+      .filter((g) => typeof g === 'string' && g.length > 0)
+      .filter((g) => !/^\d+\*\*\d+$/.test(g)); // remove scientific notation like "10**16"
 
     if (!glosses.length) continue;
     const meaning = glosses.slice(0, 6); // cap for UI

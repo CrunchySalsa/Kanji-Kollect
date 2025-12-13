@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, Alert } from 'react-native';
-import { styles } from '../styles/theme';
+import { styles, colors } from '../styles/theme';
 import { ListItem, ItemType } from '../types';
 import { hideKanji, hideWord } from '../../services/database';
 
@@ -15,6 +15,19 @@ interface ListItemRowProps {
 export function ListItemRow({ item, index, gloss, onPress, onHide }: ListItemRowProps) {
   const warn = item.encounter_count > 0 && item.practice_count === 0;
 
+  const practicePct = item.encounter_count > 0 ? (item.practice_count / item.encounter_count) * 100 : null;
+  const edgeColor =
+    practicePct === null
+      ? null
+      : practicePct === 0
+        ? colors.accent
+        : practicePct <= 50
+          ? colors.warningOrange
+          : practicePct <= 74
+            ? colors.warningYellow
+            : colors.success;
+  const edgeStyle = edgeColor ? ({ borderLeftWidth: 4, borderLeftColor: edgeColor } as const) : null;
+
   const handleLongPress = () => {
     Alert.alert('Hide item', `Hide ${item.display}?`, [
       { text: 'Cancel', style: 'cancel' },
@@ -28,7 +41,7 @@ export function ListItemRow({ item, index, gloss, onPress, onHide }: ListItemRow
 
   return (
     <TouchableOpacity
-      style={[styles.listRow, warn && styles.rowWarn]}
+      style={[styles.listRow, edgeStyle]}
       onPress={onPress}
       onLongPress={handleLongPress}
     >

@@ -27,7 +27,7 @@ type CountMap = Record<string, number>;
 
 async function openDb(): Promise<SQLite.SQLiteDatabase> {
   if (!dbPromise) {
-    dbPromise = SQLite.openDatabaseAsync('nihongo-tracker.db');
+    dbPromise = SQLite.openDatabaseAsync('kanji-kollect.db');
   }
   return dbPromise;
 }

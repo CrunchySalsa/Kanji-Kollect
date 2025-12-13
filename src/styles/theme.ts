@@ -20,6 +20,9 @@ export const colors = {
   accentLight: 'rgba(233, 69, 96, 0.25)',
   accentLighter: 'rgba(233, 69, 96, 0.2)',
   accentSubtle: 'rgba(233, 69, 96, 0.15)',
+
+  warningOrange: '#f97316',
+  warningYellow: '#eab308',
   
   success: '#22c55e',
   info: '#60a5fa',

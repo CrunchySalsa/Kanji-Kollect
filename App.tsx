@@ -4,6 +4,7 @@ import { View, Text } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
 import { createDrawerNavigator, DrawerContentScrollView, DrawerItem } from '@react-navigation/drawer';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { AppProvider } from './src/context';
 import { MainScreen } from './src/screens/MainScreen';
@@ -16,7 +17,7 @@ function CustomDrawerContent(props: any) {
   return (
     <DrawerContentScrollView {...props} style={{ backgroundColor: '#0f0f1a' }}>
       <View style={styles.drawerHeader}>
-        <Text style={styles.drawerTitle}>Nihongo Tracker</Text>
+        <Text style={styles.drawerTitle}>Kanji Kollect</Text>
       </View>
       <DrawerItem
         label="Settings"
@@ -71,12 +72,14 @@ function AppInner() {
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <NavigationContainer>
-        <AppProvider>
-          <AppInner />
-        </AppProvider>
-      </NavigationContainer>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <NavigationContainer>
+          <AppProvider>
+            <AppInner />
+          </AppProvider>
+        </NavigationContainer>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

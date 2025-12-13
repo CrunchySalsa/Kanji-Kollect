@@ -1,5 +1,5 @@
-import React, { useCallback } from 'react';
-import { View, Text, TouchableOpacity, FlatList } from 'react-native';
+import React, { useCallback, useMemo } from 'react';
+import { View, Text, TouchableOpacity, FlatList, ScrollView } from 'react-native';
 import { styles } from '../styles/theme';
 import { useAppContext } from '../context/AppContext';
 import { useSpeech } from '../hooks';
@@ -35,12 +35,9 @@ export function DetailScreen() {
     return out;
   }, []);
 
-  if (!detail) {
-    return <EmptyState message="No detail selected." />;
-  }
-
-  return (
-    <View style={{ flex: 1 }}>
+  const headerComponent = useMemo(() => {
+    if (!detail) return null;
+    return (
       <View style={styles.detailHeader}>
         {detail.type === 'word' ? (
           <TouchableOpacity onPress={() => setWordKanjiModal((s) => ({ ...s, visible: true }))} activeOpacity={0.8}>
@@ -148,27 +145,44 @@ export function DetailScreen() {
           </View>
         </View>
       </View>
+    );
+  }, [detail, detailKanjiInfo, detailWordInfo, detailWordsSpotted, detailPhotos, metaCache, openDetail, setWordKanjiModal, speakJa, uniqueReadings]);
 
-      {detailPhotos.length === 0 ? (
+  const footerComponent = useMemo(() => (
+    <Text style={styles.mutedSmallCenter}>Long-press a thumbnail to delete the photo.</Text>
+  ), []);
+
+  if (!detail) {
+    return <EmptyState message="No detail selected." />;
+  }
+
+  if (detailPhotos.length === 0 && !detailLoading) {
+    return (
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1 }}>
+        {headerComponent}
         <EmptyState loading={detailLoading} message="No photos found." />
-      ) : (
-        <FlatList
-          data={detailPhotos}
-          keyExtractor={(p) => String(p.id)}
-          numColumns={3}
-          contentContainerStyle={{ padding: 12, paddingBottom: 12 }}
-          renderItem={({ item }) => (
-            <PhotoThumbnail
-              photo={item}
-              onPress={() => openFullImage(item)}
-              onLongPress={() => onDeletePhoto(item)}
-            />
-          )}
+        {footerComponent}
+      </ScrollView>
+    );
+  }
+
+  return (
+    <FlatList
+      data={detailPhotos}
+      keyExtractor={(p) => String(p.id)}
+      numColumns={3}
+      contentContainerStyle={{ padding: 12, paddingBottom: 12 }}
+      ListHeaderComponent={headerComponent}
+      ListFooterComponent={footerComponent}
+      ListEmptyComponent={<EmptyState loading={detailLoading} message="No photos found." />}
+      renderItem={({ item }) => (
+        <PhotoThumbnail
+          photo={item}
+          onPress={() => openFullImage(item)}
+          onLongPress={() => onDeletePhoto(item)}
         />
       )}
-
-      <Text style={styles.mutedSmallCenter}>Long-press a thumbnail to delete the photo.</Text>
-    </View>
+    />
   );
 }
 

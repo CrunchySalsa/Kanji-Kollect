@@ -53,10 +53,43 @@ import { getPreference, setPreference } from '../../utils/preferences';
 import { lookupKanjiNormalized, lookupWordFlexible } from '../../services/dictionary';
 import { useUiBusy } from '../hooks';
 
+interface NavHistoryEntry {
+  screen: Screen;
+  detail: DetailInfo | null;
+  detailSnapshot?: {
+    detailPhotos: PhotoEntry[];
+    detailKanjiInfo: KanjiInfo | null;
+    detailWordInfo: WordInfo | null;
+    detailWordsSpotted: WordEntry[];
+    detailLoading: boolean;
+    wordKanjiModal: WordKanjiModalState;
+  };
+}
+
+interface ListContextType {
+  loading: boolean;
+  searchQuery: string;
+  setSearchQuery: (q: string) => void;
+  sortMethod: SortMethod;
+  sortDir: SortDir;
+  filterType: FilterType;
+  setSortMethod: (m: SortMethod) => void;
+  setSortDir: (d: SortDir) => void;
+  setFilterTypeAndPersist: (t: FilterType) => void;
+  filteredSortedByType: { kanji: ListItem[]; word: ListItem[] };
+  combinedSearchResults: ListItem[];
+  normalizedQuery: string;
+  metaCache: Record<string, MetaCacheEntry>;
+  openDetail: (type: ItemType, id: string, wordAliases?: string[]) => Promise<void>;
+  reloadList: () => Promise<void>;
+  setCaptureModal: React.Dispatch<React.SetStateAction<CaptureModalState>>;
+}
+
 interface AppContextType {
   // Screen navigation
   screen: Screen;
   setScreen: (s: Screen) => void;
+  goBack: () => boolean;
 
   // List data
   items: ListItem[];
@@ -136,6 +169,7 @@ interface AppContextType {
 }
 
 const AppContext = createContext<AppContextType | null>(null);
+const ListContext = createContext<ListContextType | null>(null);
 
 export function useAppContext() {
   const context = useContext(AppContext);
@@ -145,9 +179,20 @@ export function useAppContext() {
   return context;
 }
 
+export function useListContext() {
+  const context = useContext(ListContext);
+  if (!context) {
+    throw new Error('useListContext must be used within AppProvider');
+  }
+  return context;
+}
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [screen, setScreen] = useState<Screen>('list');
   const [items, setItems] = useState<ListItem[]>([]);
+  const navHistoryRef = useRef<NavHistoryEntry[]>([]);
+  const screenRef = useRef<Screen>('list');
+  const detailRef = useRef<DetailInfo | null>(null);
   const [sortMethod, setSortMethodState] = useState<SortMethod>('gap');
   const [sortDir, setSortDirState] = useState<SortDir>('desc');
   const [filterType, setFilterType] = useState<FilterType>('kanji');
@@ -161,12 +206,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [detailWordInfo, setDetailWordInfo] = useState<WordInfo | null>(null);
   const [detailWordsSpotted, setDetailWordsSpotted] = useState<WordEntry[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
+  const detailPhotosRef = useRef<PhotoEntry[]>([]);
+  const detailKanjiInfoRef = useRef<KanjiInfo | null>(null);
+  const detailWordInfoRef = useRef<WordInfo | null>(null);
+  const detailWordsSpottedRef = useRef<WordEntry[]>([]);
+  const detailLoadingRef = useRef(false);
 
   const [galleryType, setGalleryTypeState] = useState<GalleryType>('encounter');
   const [allPhotos, setAllPhotos] = useState<PhotoEntry[]>([]);
   const [galleryLoading, setGalleryLoading] = useState(false);
 
   const [wordKanjiModal, setWordKanjiModal] = useState<WordKanjiModalState>({ visible: false, kanji: [] });
+  const wordKanjiModalRef = useRef<WordKanjiModalState>({ visible: false, kanji: [] });
   const [fullImagePhoto, setFullImagePhoto] = useState<PhotoEntry | null>(null);
   const [fullImageMeta, setFullImageMeta] = useState<FullImageMeta | null>(null);
   const [fullImageMenuVisible, setFullImageMenuVisible] = useState(false);
@@ -180,6 +231,57 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [hiddenWordGroups, setHiddenWordGroups] = useState<{ display: string; aliases: string[] }[]>([]);
 
   const { uiBusy, uiBusyLabel, runWithUiBusy } = useUiBusy();
+
+  useEffect(() => {
+    screenRef.current = screen;
+  }, [screen]);
+
+  useEffect(() => {
+    detailRef.current = detail;
+  }, [detail]);
+
+  useEffect(() => {
+    detailPhotosRef.current = detailPhotos;
+  }, [detailPhotos]);
+
+  useEffect(() => {
+    detailKanjiInfoRef.current = detailKanjiInfo;
+  }, [detailKanjiInfo]);
+
+  useEffect(() => {
+    detailWordInfoRef.current = detailWordInfo;
+  }, [detailWordInfo]);
+
+  useEffect(() => {
+    detailWordsSpottedRef.current = detailWordsSpotted;
+  }, [detailWordsSpotted]);
+
+  useEffect(() => {
+    detailLoadingRef.current = detailLoading;
+  }, [detailLoading]);
+
+  useEffect(() => {
+    wordKanjiModalRef.current = wordKanjiModal;
+  }, [wordKanjiModal]);
+
+  const captureNavEntry = useCallback((): NavHistoryEntry => {
+    const currentScreen = screenRef.current;
+    const currentDetail = detailRef.current;
+    const entry: NavHistoryEntry = { screen: currentScreen, detail: currentDetail };
+
+    if (currentScreen === 'detail' && currentDetail) {
+      entry.detailSnapshot = {
+        detailPhotos: detailPhotosRef.current,
+        detailKanjiInfo: detailKanjiInfoRef.current,
+        detailWordInfo: detailWordInfoRef.current,
+        detailWordsSpotted: detailWordsSpottedRef.current,
+        detailLoading: detailLoadingRef.current,
+        wordKanjiModal: wordKanjiModalRef.current,
+      };
+    }
+
+    return entry;
+  }, []);
 
   // Initialize database
   useEffect(() => {
@@ -220,6 +322,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const setGalleryType = useCallback((t: GalleryType) => {
     setGalleryTypeState(t);
     setPreference('galleryType', t);
+  }, []);
+
+  const goBack = useCallback(() => {
+    const history = navHistoryRef.current;
+    if (history.length === 0) {
+      if (screenRef.current !== 'list') {
+        setScreen('list');
+        return true;
+      }
+      return false;
+    }
+    const prev = history.pop()!;
+    setScreen(prev.screen);
+    setDetail(prev.detail);
+    if (prev.screen === 'detail' && prev.detailSnapshot) {
+      setDetailPhotos(prev.detailSnapshot.detailPhotos);
+      setDetailKanjiInfo(prev.detailSnapshot.detailKanjiInfo);
+      setDetailWordInfo(prev.detailSnapshot.detailWordInfo);
+      setDetailWordsSpotted(prev.detailSnapshot.detailWordsSpotted);
+      setDetailLoading(prev.detailSnapshot.detailLoading);
+      setWordKanjiModal(prev.detailSnapshot.wordKanjiModal);
+    }
+    return true;
   }, []);
 
   const loadHiddenItems = useCallback(async () => {
@@ -518,6 +643,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const openDetail = useCallback(async (type: ItemType, id: string, wordAliases?: string[]) => {
     await runWithUiBusy('Loading…', async () => {
+      // Push current state to history before navigating
+      navHistoryRef.current.push(captureNavEntry());
+      
       setDetailLoading(true);
       setDetail({ type, id, wordAliases });
       setScreen('detail');
@@ -552,14 +680,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       setDetailLoading(false);
     });
-  }, [loadPhotosForDetail, runWithUiBusy]);
+  }, [captureNavEntry, loadPhotosForDetail, runWithUiBusy]);
 
   const openGallery = useCallback(async () => {
     await runWithUiBusy('Loading gallery…', async () => {
+      // Push current state to history before navigating
+      navHistoryRef.current.push(captureNavEntry());
       await reloadGallery();
       setScreen('gallery');
     });
-  }, [reloadGallery, runWithUiBusy]);
+  }, [captureNavEntry, reloadGallery, runWithUiBusy]);
 
   const openFullImage = useCallback(async (photo: PhotoEntry) => {
     setFullImagePhoto(photo);
@@ -737,9 +867,49 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [processCapturedUri, processCapturedUris, requestMediaPerms]);
 
+  const listValue: ListContextType = useMemo(
+    () => ({
+      loading,
+      searchQuery,
+      setSearchQuery,
+      sortMethod,
+      sortDir,
+      filterType,
+      setSortMethod,
+      setSortDir,
+      setFilterTypeAndPersist,
+      filteredSortedByType,
+      combinedSearchResults,
+      normalizedQuery,
+      metaCache,
+      openDetail,
+      reloadList,
+      setCaptureModal,
+    }),
+    [
+      loading,
+      searchQuery,
+      setSearchQuery,
+      sortMethod,
+      sortDir,
+      filterType,
+      setSortMethod,
+      setSortDir,
+      setFilterTypeAndPersist,
+      filteredSortedByType,
+      combinedSearchResults,
+      normalizedQuery,
+      metaCache,
+      openDetail,
+      reloadList,
+      setCaptureModal,
+    ]
+  );
+
   const value: AppContextType = {
     screen,
     setScreen,
+    goBack,
     items,
     loading,
     reloadList,
@@ -796,6 +966,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     normalizedQuery,
   };
 
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+  return (
+    <AppContext.Provider value={value}>
+      <ListContext.Provider value={listValue}>{children}</ListContext.Provider>
+    </AppContext.Provider>
+  );
 }
 

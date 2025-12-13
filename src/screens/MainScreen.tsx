@@ -26,6 +26,7 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
   const {
     screen,
     setScreen,
+    goBack,
     processing,
     processingStatus,
     uiBusy,
@@ -82,8 +83,7 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
     }
 
     if (screen !== 'list') {
-      setScreen('list');
-      return true;
+      return goBack();
     }
 
     return false;
@@ -99,7 +99,7 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
     setFullImageMenuVisible,
     setFullImagePhoto,
     setFullImageMeta,
-    setScreen,
+    goBack,
   ]);
 
   useBackHandler(handleBackPress);
@@ -162,9 +162,13 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
       )}
 
       {screen === 'settings' && <SettingsScreen />}
-      {screen === 'list' && <ListScreen />}
+      {/* Keep ListScreen mounted to preserve scroll position when navigating away and back */}
+      <View style={{ flex: 1, display: screen === 'list' ? 'flex' : 'none' }} pointerEvents={screen === 'list' ? 'auto' : 'none'}>
+        <ListScreen />
+      </View>
       {screen === 'detail' && <DetailScreen />}
       {screen === 'gallery' && <GalleryScreen />}
+      {screen === 'settings' && <SettingsScreen />}
 
       <WordKanjiModal
         state={wordKanjiModal}

@@ -6,8 +6,9 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createDrawerNavigator, DrawerContentScrollView, DrawerItem } from '@react-navigation/drawer';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
-import { AppProvider } from './src/context';
+import { AppProvider, useAppContext } from './src/context';
 import { MainScreen } from './src/screens/MainScreen';
+import { ApiKeyModal } from './src/components/modals';
 import { styles } from './src/styles/theme';
 import { Screen } from './src/types';
 
@@ -34,9 +35,14 @@ function CustomDrawerContent(props: any) {
 
 function AppInner() {
   const setScreenRef = useRef<((s: Screen) => void) | null>(null);
+  const { apiKey, apiKeyLoading, setApiKey } = useAppContext();
+
+  const showApiKeyModal = !apiKeyLoading && !apiKey;
 
   return (
-    <Drawer.Navigator
+    <>
+      <ApiKeyModal visible={showApiKeyModal} onSubmit={setApiKey} />
+      <Drawer.Navigator
       screenOptions={{
         headerShown: false,
         drawerStyle: {
@@ -67,6 +73,7 @@ function AppInner() {
         )}
       </Drawer.Screen>
     </Drawer.Navigator>
+    </>
   );
 }
 

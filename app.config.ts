@@ -43,7 +43,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
 
   return {
     ...config,
-    name: 'kanji-collect',
+    name: 'Kanji Kollect',
     slug: 'kanji-kollect',
     version: '1.0.0',
     orientation: 'portrait',

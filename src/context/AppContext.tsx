@@ -53,9 +53,9 @@ import {
   backfillWordDisplayBatch,
 } from '../../services/database';
 import { savePhotoToStorage, deletePhotoFromStorage } from '../../services/photoStorage';
-import { processImage } from '../../services/ocr';
+import { processImage, OcrError } from '../../services/ocr';
 import { extractKanjiAndWordsWithCountsSmart, isKanji } from '../../utils/kanjiExtractor';
-import { getPreference, setPreference } from '../../utils/preferences';
+import { getPreference, setPreference, removePreference } from '../../utils/preferences';
 import { lookupKanjiNormalized, lookupWordFlexible, lookupKanjiBatch, lookupWordBatch } from '../../services/dictionary';
 import { ensureDictionarySqliteStarted } from '../../services/dictionarySqlite';
 import { useUiBusy } from '../hooks';
@@ -103,6 +103,11 @@ interface ListContextType {
 }
 
 interface AppContextType {
+  // API key
+  apiKey: string | null;
+  apiKeyLoading: boolean;
+  setApiKey: (key: string) => Promise<void>;
+
   // Screen navigation
   screen: Screen;
   setScreen: (s: Screen) => void;
@@ -227,6 +232,8 @@ export function useListContext() {
 }
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
+  const [apiKey, setApiKeyState] = useState<string | null>(null);
+  const [apiKeyLoading, setApiKeyLoading] = useState(true);
   const [screen, setScreen] = useState<Screen>('list');
   const [items, setItems] = useState<ListItem[]>([]);
   const itemsRef = useRef<ListItem[]>([]);
@@ -475,6 +482,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const savedSortDir = await getPreference('sortDir');
       const savedFilter = await getPreference('filterType');
       const savedGalleryType = await getPreference('galleryType');
+      const savedApiKey = await getPreference('apiKey');
       if (savedSort === 'encountered' || savedSort === 'practiced' || savedSort === 'mastery' || savedSort === 'priority') setSortMethodState(savedSort);
       if (savedSort === 'gap') setSortMethodState('priority');
       if (savedSortDir === 'asc' || savedSortDir === 'desc') setSortDirState(savedSortDir);
@@ -482,7 +490,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (savedFilter === 'word') setFilterType('word');
       if (savedFilter === 'words') setFilterType('word');
       if (savedGalleryType === 'encounter' || savedGalleryType === 'practice') setGalleryTypeState(savedGalleryType);
+      setApiKeyState(savedApiKey);
+      setApiKeyLoading(false);
     })().catch((e) => console.error(e));
+  }, []);
+
+  const setApiKey = useCallback(async (key: string) => {
+    const trimmed = key.trim();
+    setApiKeyState(trimmed || null);
+    if (trimmed) {
+      await setPreference('apiKey', trimmed);
+    } else {
+      await removePreference('apiKey');
+    }
   }, []);
 
   const setSortMethod = useCallback((m: SortMethod) => {
@@ -1348,7 +1368,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         await setPhotoKanjiCounts(photo.id, photo.type, {});
         await setPhotoWordCounts(photo.id, photo.type, {});
 
-        const ocrText = await processImage(photo.uri, photo.type === 'practice');
+        const ocrText = await processImage(photo.uri, apiKey, photo.type === 'practice');
         const { kanjiCounts, wordCounts } = await extractKanjiAndWordsWithCountsSmart(ocrText);
 
         if (Object.keys(kanjiCounts).length) await setPhotoKanjiCounts(photo.id, photo.type, kanjiCounts);
@@ -1371,14 +1391,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       } catch (e) {
         console.error(e);
-        Alert.alert('Error', 'Failed to reprocess the photo.');
+        const message = e instanceof OcrError ? e.message : 'Failed to reprocess the photo.';
+        Alert.alert('Error', message);
       } finally {
         setProcessing(false);
         setProcessingStatus('Processing…');
         setProcessingPhotoType(null);
       }
     },
-    [detail, ensureMetaForKeys, fullImagePhoto?.id, loadPhotosForDetail, reloadGallery, reloadList, screen]
+    [apiKey, detail, ensureMetaForKeys, fullImagePhoto?.id, loadPhotosForDetail, reloadGallery, reloadList, screen]
   );
 
   const replacePhotoWithSource = useCallback(
@@ -1394,7 +1415,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         await setPhotoKanjiCounts(photo.id, photo.type, {});
         await setPhotoWordCounts(photo.id, photo.type, {});
 
-        const ocrText = await processImage(storedUri, photo.type === 'practice');
+        const ocrText = await processImage(storedUri, apiKey, photo.type === 'practice');
         const { kanjiCounts, wordCounts } = await extractKanjiAndWordsWithCountsSmart(ocrText);
 
         await updatePhotoUri(photo.id, storedUri, updatedAt);
@@ -1433,7 +1454,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         await deletePhotoFromStorage(photo.uri);
       } catch (e) {
         console.error(e);
-        Alert.alert('Error', 'Failed to replace the photo.');
+        const message = e instanceof OcrError ? e.message : 'Failed to replace the photo.';
+        Alert.alert('Error', message);
       } finally {
         setProcessing(false);
         setProcessingStatus('Processing…');
@@ -1441,22 +1463,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
     },
     [
+      apiKey,
       detail,
-      deletePhotoFromStorage,
       ensureMetaForKeys,
       fullImagePhoto?.id,
-      getKanjiForPhoto,
-      getWordsForPhoto,
       loadPhotosForDetail,
-      processImage,
       reloadGallery,
       reloadList,
       screen,
-      savePhotoToStorage,
-      extractKanjiAndWordsWithCountsSmart,
-      updatePhotoUri,
-      setPhotoKanjiCounts,
-      setPhotoWordCounts,
     ]
   );
 
@@ -1534,7 +1548,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setProcessingStatus('Processing 1/1…');
     try {
       const storedUri = await savePhotoToStorage(sourceUri);
-      const ocrText = await processImage(storedUri, photoType === 'practice');
+      const ocrText = await processImage(storedUri, apiKey, photoType === 'practice');
       const { kanji, words, kanjiCounts, wordCounts } = await extractKanjiAndWordsWithCountsSmart(ocrText);
       const photoId = await savePhoto(storedUri, photoType);
       if (Object.keys(kanjiCounts).length) await setPhotoKanjiCounts(photoId, photoType, kanjiCounts);
@@ -1543,13 +1557,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       Alert.alert('Saved', `Extracted ${kanji.length} kanji and ${words.length} words.`);
     } catch (e) {
       console.error(e);
-      Alert.alert('Error', 'Failed to process the photo.');
+      const message = e instanceof OcrError ? e.message : 'Failed to process the photo.';
+      Alert.alert('Error', message);
     } finally {
       setProcessing(false);
       setProcessingStatus('Processing…');
       setProcessingPhotoType(null);
     }
-  }, [reloadList]);
+  }, [apiKey, reloadList]);
 
   const processCapturedUris = useCallback(async (sourceUris: string[], photoType: PhotoType) => {
     if (!sourceUris.length) return;
@@ -1570,7 +1585,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const allResults: OcrResult[] = [];
 
       const runOcr = async (storedUri: string): Promise<OcrResult> => {
-        const ocrText = await processImage(storedUri, photoType === 'practice');
+        const ocrText = await processImage(storedUri, apiKey, photoType === 'practice');
         const { kanji, words, kanjiCounts, wordCounts } = await extractKanjiAndWordsWithCountsSmart(ocrText);
         ocrCompleted++;
         setProcessingStatus(`Running OCR ${ocrCompleted}/${storedUris.length}…`);
@@ -1599,13 +1614,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       Alert.alert('Saved', `Imported ${sourceUris.length} photos. Extracted ${totalKanji} kanji and ${totalWords} words total.`);
     } catch (e) {
       console.error(e);
-      Alert.alert('Error', 'Failed to process one of the selected photos.');
+      const message = e instanceof OcrError ? e.message : 'Failed to process one of the selected photos.';
+      Alert.alert('Error', message);
     } finally {
       setProcessing(false);
       setProcessingStatus('Processing…');
       setProcessingPhotoType(null);
     }
-  }, [reloadList]);
+  }, [apiKey, reloadList]);
 
   const captureFromCamera = useCallback(async (photoType: PhotoType) => {
     const ok = await requestCameraPerms();
@@ -1741,6 +1757,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   const value: AppContextType = {
+    apiKey,
+    apiKeyLoading,
+    setApiKey,
     screen,
     setScreen,
     goBack,
@@ -1818,8 +1837,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     filteredSorted,
     combinedSearchResults,
     normalizedQuery,
-    retakeFromCamera,
-    retakeFromGallery,
   };
 
   return (

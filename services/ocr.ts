@@ -1,42 +1,51 @@
 import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
 
 /**
+ * Custom error class for OCR-related errors.
+ */
+export class OcrError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OcrError';
+  }
+}
+
+/**
  * Process an image and extract Japanese text using OCR.
  * Uses Google Cloud Vision API.
  * 
  * @param imageUri - Local file URI of the image
+ * @param apiKey - Google Cloud Vision API key
  * @param isHandwritten - Whether the image contains handwritten text (unused, kept for API compatibility)
  * @returns Extracted text from the image
+ * @throws {OcrError} When OCR fails or API key is missing
  */
-export async function processImage(imageUri: string, _isHandwritten: boolean = false): Promise<string> {
-  const cloudResult = await tryCloudOcr(imageUri);
-  if (cloudResult) {
-    return cloudResult;
+export async function processImage(imageUri: string, apiKey: string | null, _isHandwritten: boolean = false): Promise<string> {
+  if (!apiKey) {
+    throw new OcrError('No API key configured. Please add your Google Cloud Vision API key in Settings.');
   }
 
-  // If cloud OCR fails or is not configured, return empty
-  console.log('OCR failed or not configured. Please set EXPO_PUBLIC_GOOGLE_CLOUD_VISION_API_KEY in .env');
-  return '';
+  return await tryCloudOcr(imageUri, apiKey);
 }
 
 /**
  * Attempt OCR using Google Cloud Vision API.
  */
-async function tryCloudOcr(imageUri: string): Promise<string | null> {
-  const apiKey = process.env.EXPO_PUBLIC_GOOGLE_CLOUD_VISION_API_KEY;
-  
-  if (!apiKey) {
-    console.log('No Google Cloud Vision API key configured. Set EXPO_PUBLIC_GOOGLE_CLOUD_VISION_API_KEY in .env');
-    return null;
-  }
-
+async function tryCloudOcr(imageUri: string, apiKey: string): Promise<string> {
+  // Read image as base64
+  let base64Image: string;
   try {
-    // Read image as base64
-    const base64Image = await readAsStringAsync(imageUri, {
+    base64Image = await readAsStringAsync(imageUri, {
       encoding: EncodingType.Base64,
     });
+  } catch (error) {
+    console.error('Failed to read image:', error);
+    throw new OcrError('Failed to read the image file.');
+  }
 
-    const response = await fetch(
+  let response: Response;
+  try {
+    response = await fetch(
       `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
       {
         method: 'POST',
@@ -56,26 +65,48 @@ async function tryCloudOcr(imageUri: string): Promise<string | null> {
         }),
       }
     );
-
-    if (!response.ok) {
-      console.error('Cloud Vision API error:', response.status);
-      return null;
-    }
-
-    const data = await response.json();
-    const text = data.responses?.[0]?.fullTextAnnotation?.text ?? '';
-    
-    return text;
   } catch (error) {
-    console.error('Cloud OCR error:', error);
-    return null;
+    console.error('Network error during OCR:', error);
+    throw new OcrError('Network error. Please check your internet connection.');
   }
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    console.error('Cloud Vision API error:', response.status, errorText);
+    
+    if (response.status === 400) {
+      throw new OcrError('Invalid API key or request. Please check your API key in Settings.');
+    } else if (response.status === 403) {
+      throw new OcrError('API key is not authorized. Enable Cloud Vision API in Google Cloud Console.');
+    } else if (response.status === 429) {
+      throw new OcrError('API quota exceeded. Please try again later.');
+    } else {
+      throw new OcrError(`OCR failed (error ${response.status}). Please try again.`);
+    }
+  }
+
+  let data: any;
+  try {
+    data = await response.json();
+  } catch (error) {
+    console.error('Failed to parse OCR response:', error);
+    throw new OcrError('Failed to parse OCR response.');
+  }
+
+  // Check for API-level errors in the response
+  const apiError = data.responses?.[0]?.error;
+  if (apiError) {
+    console.error('Vision API returned error:', apiError);
+    throw new OcrError(apiError.message || 'OCR processing failed.');
+  }
+
+  const text = data.responses?.[0]?.fullTextAnnotation?.text ?? '';
+  return text;
 }
 
 /**
- * Check if cloud OCR is available (API key is configured).
+ * Check if cloud OCR is available (API key is provided).
  */
-export function isCloudOcrAvailable(): boolean {
-  const apiKey = process.env.EXPO_PUBLIC_GOOGLE_CLOUD_VISION_API_KEY;
+export function isCloudOcrAvailable(apiKey: string | null): boolean {
   return !!apiKey && apiKey.length > 0;
 }

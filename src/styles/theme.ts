@@ -197,7 +197,7 @@ export const styles = StyleSheet.create({
   fullOverlay: { flex: 1, backgroundColor: colors.overlayFull },
   fullTapZone: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   fullImage: { width: '100%', height: '80%' },
-  fullClose: { position: 'absolute', top: 18, right: spacing.xl, width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(22,33,62,0.9)', alignItems: 'center', justifyContent: 'center' },
+  fullClose: { position: 'absolute', top: 56, right: spacing.xl, width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(22,33,62,0.9)', alignItems: 'center', justifyContent: 'center' },
   fullCloseText: { color: colors.text, fontSize: typography.xlarge, fontWeight: '800' },
   fullMenu: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: colors.surface, borderTopLeftRadius: radii.xxl, borderTopRightRadius: radii.xxl, padding: spacing.xl, gap: 10, borderTopWidth: 1, borderTopColor: colors.border },
   fullMenuTitle: { color: colors.text, fontSize: typography.large, fontWeight: '800', textAlign: 'center' },
@@ -210,5 +210,13 @@ export const styles = StyleSheet.create({
   modalDanger: { backgroundColor: colors.accentLight },
   modalCancel: { backgroundColor: colors.accentLighter },
   modalBtnText: { color: colors.text, fontWeight: '700' },
+
+  // Floating actions
+  fabContainer: { position: 'absolute', right: spacing.xxxl, bottom: spacing.xxxl, alignItems: 'flex-end' },
+  fab: { width: 64, height: 64, borderRadius: radii.lg, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 6 },
+  fabIcon: { color: colors.dark, fontSize: typography.huge, fontWeight: '900', marginTop: -4 },
+  fabMenu: { marginBottom: spacing.md, borderRadius: radii.xl, padding: spacing.sm, borderWidth: 1, gap: spacing.xs },
+  fabMenuItem: { borderRadius: radii.lg, paddingVertical: spacing.md, paddingHorizontal: spacing.xl },
+  fabMenuItemText: { fontWeight: '800', textAlign: 'center' },
 });
 

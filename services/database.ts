@@ -127,6 +127,12 @@ export async function savePhoto(uri: string, type: 'encounter' | 'practice'): Pr
   return result.lastInsertRowId;
 }
 
+export async function updatePhotoUri(photoId: number, uri: string, updatedAt?: number): Promise<void> {
+  const database = await ensureInitialized();
+  const ts = typeof updatedAt === 'number' ? updatedAt : Date.now();
+  await database.runAsync('UPDATE photos SET uri = ?, created_at = ?, ocr_complete = 1 WHERE id = ?', [uri, ts, photoId]);
+}
+
 export async function getAllPhotos(): Promise<PhotoEntry[]> {
   const database = await ensureInitialized();
   return await database.getAllAsync<PhotoEntry>(
@@ -197,6 +203,22 @@ export async function getKanjiList(): Promise<KanjiEntry[]> {
   const database = await ensureInitialized();
   return await database.getAllAsync<KanjiEntry>(
     'SELECT character, encounter_count, practice_count FROM kanji WHERE hidden = 0 OR hidden IS NULL ORDER BY encounter_count DESC'
+  );
+}
+
+export async function getKanjiCount(): Promise<number> {
+  const database = await ensureInitialized();
+  const row = await database.getFirstAsync<{ count: number }>(
+    'SELECT COUNT(*) AS count FROM kanji WHERE hidden = 0 OR hidden IS NULL'
+  );
+  return row?.count ?? 0;
+}
+
+export async function getKanjiListPaged(limit: number, offset: number): Promise<KanjiEntry[]> {
+  const database = await ensureInitialized();
+  return await database.getAllAsync<KanjiEntry>(
+    'SELECT character, encounter_count, practice_count FROM kanji WHERE hidden = 0 OR hidden IS NULL ORDER BY encounter_count DESC LIMIT ? OFFSET ?',
+    [limit, offset]
   );
 }
 
@@ -499,6 +521,55 @@ export async function getWordGroupsList(): Promise<
     GROUP BY COALESCE(display, word)
     ORDER BY encounter_count DESC
     `
+  );
+  return rows.map((r) => ({
+    display: r.display,
+    encounter_count: r.encounter_count ?? 0,
+    practice_count: r.practice_count ?? 0,
+    aliases: r.aliases ? r.aliases.split(sep).filter(Boolean) : [],
+  }));
+}
+
+export async function getWordGroupsCount(): Promise<number> {
+  const database = await ensureInitialized();
+  const row = await database.getFirstAsync<{ count: number }>(
+    `
+    SELECT COUNT(*) AS count FROM (
+      SELECT COALESCE(display, word) AS display
+      FROM words
+      WHERE hidden = 0 OR hidden IS NULL
+      GROUP BY COALESCE(display, word)
+    ) sub
+    `
+  );
+  return row?.count ?? 0;
+}
+
+export async function getWordGroupsListPaged(
+  limit: number,
+  offset: number
+): Promise<{ display: string; encounter_count: number; practice_count: number; aliases: string[] }[]> {
+  const database = await ensureInitialized();
+  const sep = '\u001f';
+  const rows = await database.getAllAsync<{
+    display: string;
+    encounter_count: number;
+    practice_count: number;
+    aliases: string | null;
+  }>(
+    `
+    SELECT
+      COALESCE(display, word) AS display,
+      SUM(encounter_count) AS encounter_count,
+      SUM(practice_count) AS practice_count,
+      GROUP_CONCAT(word, '${sep}') AS aliases
+    FROM words
+    WHERE hidden = 0 OR hidden IS NULL
+    GROUP BY COALESCE(display, word)
+    ORDER BY encounter_count DESC
+    LIMIT ? OFFSET ?
+    `,
+    [limit, offset]
   );
   return rows.map((r) => ({
     display: r.display,

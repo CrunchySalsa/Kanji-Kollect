@@ -28,7 +28,10 @@ import {
 import {
   initDatabase,
   savePhoto,
+  updatePhotoUri,
   getKanjiList,
+  getKanjiCount,
+  getKanjiListPaged,
   getPhotosForKanji,
   getPhotosForWord,
   deletePhoto,
@@ -44,6 +47,8 @@ import {
   unhideWord,
   getAllPhotos,
   getWordGroupsList,
+  getWordGroupsCount,
+  getWordGroupsListPaged,
   getHiddenWordGroupsList,
   backfillWordDisplayBatch,
 } from '../../services/database';
@@ -60,6 +65,8 @@ interface NavHistoryEntry {
   detail: DetailInfo | null;
   fullImageSnapshot?: {
     photo: PhotoEntry | null;
+    photos: PhotoEntry[];
+    index: number;
     meta: FullImageMeta | null;
     menuVisible: boolean;
     menuTab: 'kanji' | 'word';
@@ -145,6 +152,9 @@ interface AppContextType {
   setWordKanjiModal: React.Dispatch<React.SetStateAction<WordKanjiModalState>>;
   fullImagePhoto: PhotoEntry | null;
   setFullImagePhoto: React.Dispatch<React.SetStateAction<PhotoEntry | null>>;
+  fullImagePhotos: PhotoEntry[];
+  fullImageIndex: number;
+  setFullImageIndex: (index: number) => Promise<void>;
   fullImageMeta: FullImageMeta | null;
   setFullImageMeta: React.Dispatch<React.SetStateAction<FullImageMeta | null>>;
   fullImageMenuVisible: boolean;
@@ -153,6 +163,7 @@ interface AppContextType {
   setFullImageMenuTab: React.Dispatch<React.SetStateAction<'kanji' | 'word'>>;
   fullImageMenuScrollY: { kanji: number; word: number };
   setFullImageMenuScrollY: React.Dispatch<React.SetStateAction<{ kanji: number; word: number }>>;
+  closeFullImageViewer: () => void;
 
   // Processing state
   processing: boolean;
@@ -160,6 +171,11 @@ interface AppContextType {
   processingPhotoType: PhotoType | null;
   pickerBusy: boolean;
   pickerBusyPhotoType: PhotoType | null;
+
+  // Initial load progress
+  initialLoadVisible: boolean;
+  initialLoadLabel: string;
+  initialLoadProgress: number;
 
   // UI Busy
   uiBusy: boolean;
@@ -171,11 +187,14 @@ interface AppContextType {
   loadHiddenItems: () => Promise<void>;
 
   // Actions
-  openFullImage: (photo: PhotoEntry) => Promise<void>;
+  openFullImage: (photo: PhotoEntry, opts?: { photos?: PhotoEntry[]; startIndex?: number }) => Promise<void>;
   openEditForPhoto: (photo: PhotoEntry) => Promise<void>;
   saveEditForPhoto: () => Promise<void>;
   applyEditsForPhoto: (photo: PhotoEntry, kanji: string[], words: string[]) => Promise<void>;
   reprocessPhoto: (photo: PhotoEntry) => Promise<void>;
+  retakePhoto: (photo: PhotoEntry) => void;
+  retakeFromCamera: (photo: PhotoEntry) => Promise<void>;
+  retakeFromGallery: (photo: PhotoEntry) => Promise<void>;
   deletePhotos: (photos: PhotoEntry[]) => Promise<void>;
   onDeletePhoto: (photo: PhotoEntry) => void;
   captureFromCamera: (photoType: PhotoType) => Promise<void>;
@@ -241,11 +260,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [wordKanjiModal, setWordKanjiModal] = useState<WordKanjiModalState>({ visible: false, kanji: [] });
   const wordKanjiModalRef = useRef<WordKanjiModalState>({ visible: false, kanji: [] });
   const [fullImagePhoto, setFullImagePhoto] = useState<PhotoEntry | null>(null);
+  const [fullImagePhotos, setFullImagePhotos] = useState<PhotoEntry[]>([]);
+  const [fullImageIndex, setFullImageIndexState] = useState(0);
   const [fullImageMeta, setFullImageMeta] = useState<FullImageMeta | null>(null);
   const [fullImageMenuVisible, setFullImageMenuVisible] = useState(false);
   const [fullImageMenuTab, setFullImageMenuTab] = useState<'kanji' | 'word'>('kanji');
   const [fullImageMenuScrollY, setFullImageMenuScrollY] = useState<{ kanji: number; word: number }>({ kanji: 0, word: 0 });
   const fullImagePhotoRef = useRef<PhotoEntry | null>(null);
+  const fullImagePhotosRef = useRef<PhotoEntry[]>([]);
+  const fullImageIndexRef = useRef(0);
   const fullImageMetaRef = useRef<FullImageMeta | null>(null);
   const fullImageMenuVisibleRef = useRef(false);
   const fullImageMenuTabRef = useRef<'kanji' | 'word'>('kanji');
@@ -258,6 +281,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [processingPhotoType, setProcessingPhotoType] = useState<PhotoType | null>(null);
   const [pickerBusy, setPickerBusy] = useState(false);
   const [pickerBusyPhotoType, setPickerBusyPhotoType] = useState<PhotoType | null>(null);
+  const [initialLoadStatus, setInitialLoadStatus] = useState<{ visible: boolean; label: string; progress: number }>({
+    visible: false,
+    label: '',
+    progress: 0,
+  });
+  const initialLoadTimer = useRef<NodeJS.Timeout | null>(null);
+
+  const stopInitialLoadTicker = useCallback(() => {
+    if (initialLoadTimer.current) {
+      clearInterval(initialLoadTimer.current);
+      initialLoadTimer.current = null;
+    }
+  }, []);
+
+  const startInitialLoadTicker = useCallback(() => {
+    stopInitialLoadTicker();
+    initialLoadTimer.current = setInterval(() => {
+      setInitialLoadStatus((prev) => {
+        if (!prev.visible) return prev;
+        // Gently creep toward 80% while the fetch is running.
+        const next = Math.min(prev.progress + 0.015, 0.8);
+        if (next <= prev.progress) return prev;
+        return { ...prev, progress: next };
+      });
+    }, 450);
+  }, [stopInitialLoadTicker]);
 
   const [hiddenKanjiItems, setHiddenKanjiItems] = useState<KanjiEntry[]>([]);
   const [hiddenWordGroups, setHiddenWordGroups] = useState<{ display: string; aliases: string[] }[]>([]);
@@ -343,8 +392,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [wordKanjiModal]);
 
   useEffect(() => {
+    return () => {
+      stopInitialLoadTicker();
+    };
+  }, [stopInitialLoadTicker]);
+
+  useEffect(() => {
     fullImagePhotoRef.current = fullImagePhoto;
   }, [fullImagePhoto]);
+
+  useEffect(() => {
+    fullImagePhotosRef.current = fullImagePhotos;
+  }, [fullImagePhotos]);
+
+  useEffect(() => {
+    fullImageIndexRef.current = fullImageIndex;
+  }, [fullImageIndex]);
 
   useEffect(() => {
     fullImageMetaRef.current = fullImageMeta;
@@ -370,6 +433,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // Preserve full-image overlay state (so Back can restore it after navigating away).
     entry.fullImageSnapshot = {
       photo: fullImagePhotoRef.current,
+      photos: fullImagePhotosRef.current,
+      index: fullImageIndexRef.current,
       meta: fullImageMetaRef.current,
       menuVisible: fullImageMenuVisibleRef.current,
       menuTab: fullImageMenuTabRef.current,
@@ -454,6 +519,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setDetail(prev.detail);
     if (prev.fullImageSnapshot) {
       setFullImagePhoto(prev.fullImageSnapshot.photo);
+      setFullImagePhotos(prev.fullImageSnapshot.photos ?? []);
+      setFullImageIndexState(prev.fullImageSnapshot.index ?? 0);
       setFullImageMeta(prev.fullImageSnapshot.meta);
       setFullImageMenuVisible(prev.fullImageSnapshot.menuVisible);
       setFullImageMenuTab(prev.fullImageSnapshot.menuTab);
@@ -489,9 +556,85 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const reloadList = useCallback(async () => {
     const isInitial = itemsRef.current.length === 0;
-    if (isInitial) setLoading(true);
-    const kanji = await getKanjiList();
-    const wordGroups = await getWordGroupsList();
+    if (isInitial) {
+      setLoading(true);
+      setInitialLoadStatus({ visible: true, label: 'Loading kanji…', progress: 0.05 });
+    }
+
+    let kanji: Awaited<ReturnType<typeof getKanjiList>>;
+    let wordGroups: Awaited<ReturnType<typeof getWordGroupsList>>;
+
+    if (isInitial) {
+      const PAGE_SIZE = 400;
+      const totalKanji = await getKanjiCount();
+      const totalWordGroups = await getWordGroupsCount();
+      const totalRows = Math.max(1, totalKanji + totalWordGroups);
+      let kanjiLoaded = 0;
+      let wordLoaded = 0;
+
+      const nextItems: ListItem[] = [];
+
+      const updateProgress = (label: string) => {
+        const progress = Math.min(0.99, (kanjiLoaded + wordLoaded) / totalRows);
+        setInitialLoadStatus({ visible: true, label, progress });
+      };
+
+      // Load kanji in pages
+      while (kanjiLoaded < totalKanji) {
+        const page = await getKanjiListPaged(PAGE_SIZE, kanjiLoaded);
+        if (!page.length) break;
+        nextItems.push(
+          ...page.map((k) => ({
+            type: 'kanji' as const,
+            key: `kanji:${k.character}`,
+            display: k.character,
+            encounter_count: k.encounter_count,
+            practice_count: k.practice_count,
+          }))
+        );
+        kanjiLoaded += page.length;
+        updateProgress('Loading kanji…');
+        setItems([...nextItems]);
+        await new Promise((r) => setTimeout(r, 0));
+      }
+
+      // Load words in pages
+      while (wordLoaded < totalWordGroups) {
+        const page = await getWordGroupsListPaged(PAGE_SIZE, wordLoaded);
+        if (!page.length) break;
+        nextItems.push(
+          ...page.map((g) => ({
+            type: 'word' as const,
+            key: `word:${g.display}`,
+            display: g.display,
+            encounter_count: g.encounter_count,
+            practice_count: g.practice_count,
+            wordAliases: g.aliases,
+          }))
+        );
+        wordLoaded += page.length;
+        updateProgress('Loading words…');
+        setItems([...nextItems]);
+        await new Promise((r) => setTimeout(r, 0));
+      }
+
+      kanji = nextItems.filter((i) => i.type === 'kanji').map((i) => ({
+        character: i.display,
+        encounter_count: i.encounter_count,
+        practice_count: i.practice_count,
+      }));
+      wordGroups = nextItems
+        .filter((i) => i.type === 'word')
+        .map((i) => ({
+          display: i.display,
+          encounter_count: i.encounter_count,
+          practice_count: i.practice_count,
+          aliases: (i as any).wordAliases ?? [],
+        }));
+      updateProgress('Finalizing…');
+    } else {
+      [kanji, wordGroups] = await Promise.all([getKanjiList(), getWordGroupsList()]);
+    }
 
     const nextItems: ListItem[] = [
       ...kanji.map((k) => ({
@@ -548,11 +691,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       .slice(0, 40)
       .map((i) => `word:${i.display}`);
 
-    await ensureMetaForKeys([...nextKanjiTop, ...nextWordTop]);
-
     setItems(nextItems);
-    if (isInitial) setLoading(false);
-  }, [ensureMetaForKeys, sortDir, sortMethod]);
+    if (isInitial) {
+      setInitialLoadStatus((s) => ({ ...s, progress: Math.max(s.progress, 0.95), label: 'Finalizing…' }));
+      setLoading(false);
+      (async () => {
+        try {
+          await ensureMetaForKeys([...nextKanjiTop, ...nextWordTop]);
+        } finally {
+          stopInitialLoadTicker();
+          setInitialLoadStatus({ visible: false, label: '', progress: 1 });
+        }
+      })().catch((e) => console.error(e));
+    } else {
+      await ensureMetaForKeys([...nextKanjiTop, ...nextWordTop]);
+    }
+  }, [ensureMetaForKeys, sortDir, sortMethod, startInitialLoadTicker, stopInitialLoadTicker]);
 
   // One-time backfill for existing installs: populate cached word display values in small batches.
   useEffect(() => {
@@ -1043,16 +1197,63 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
   }, [captureNavEntry, reloadGallery, runWithUiBusy]);
 
-  const openFullImage = useCallback(async (photo: PhotoEntry) => {
-    setFullImagePhoto(photo);
+  const loadFullImageMeta = useCallback(
+    async (photo: PhotoEntry) => {
+      const kanji = await getKanjiForPhoto(photo.id);
+      const words = await getWordsForPhoto(photo.id);
+      setFullImageMeta({ kanji, words });
+      ensureMetaForKeys([...kanji.map((k) => `kanji:${k}`), ...words.map((w) => `word:${w}`)]).catch((e) => console.error(e));
+    },
+    [ensureMetaForKeys]
+  );
+
+  const openFullImage = useCallback(
+    async (photo: PhotoEntry, opts?: { photos?: PhotoEntry[]; startIndex?: number }) => {
+      const list =
+        opts?.photos && opts.photos.length
+          ? opts.photos
+          : allPhotos && allPhotos.length
+            ? allPhotos
+            : [photo];
+      const requestedIndex = opts?.startIndex ?? list.findIndex((p) => p.id === photo.id);
+      const safeIndex = requestedIndex >= 0 ? requestedIndex : 0;
+      const nextPhoto = list[safeIndex] ?? photo;
+
+      setFullImagePhotos(list);
+      setFullImageIndexState(safeIndex);
+      setFullImagePhoto(nextPhoto);
+      setFullImageMenuVisible(false);
+      setFullImageMenuTab('kanji');
+      setFullImageMenuScrollY({ kanji: 0, word: 0 });
+      await loadFullImageMeta(nextPhoto);
+    },
+    [allPhotos, loadFullImageMeta]
+  );
+
+  const setFullImageIndex = useCallback(
+    async (nextIndex: number) => {
+      const list = fullImagePhotosRef.current;
+      if (!list.length) return;
+      const clamped = Math.max(0, Math.min(nextIndex, list.length - 1));
+      const nextPhoto = list[clamped];
+      setFullImageIndexState(clamped);
+      setFullImagePhoto(nextPhoto);
+      setFullImageMenuScrollY({ kanji: 0, word: 0 });
+      setFullImageMenuVisible(false);
+      setFullImageMenuTab('kanji');
+      await loadFullImageMeta(nextPhoto);
+    },
+    [loadFullImageMeta]
+  );
+
+  const closeFullImageViewer = useCallback(() => {
     setFullImageMenuVisible(false);
-    setFullImageMenuTab('kanji');
+    setFullImagePhoto(null);
+    setFullImageMeta(null);
+    setFullImagePhotos([]);
+    setFullImageIndexState(0);
     setFullImageMenuScrollY({ kanji: 0, word: 0 });
-    const kanji = await getKanjiForPhoto(photo.id);
-    const words = await getWordsForPhoto(photo.id);
-    setFullImageMeta({ kanji, words });
-    ensureMetaForKeys([...kanji.map((k) => `kanji:${k}`), ...words.map((w) => `word:${w}`)]).catch((e) => console.error(e));
-  }, [ensureMetaForKeys]);
+  }, []);
 
   const openEditForPhoto = useCallback(async (photo: PhotoEntry) => {
     const kanji = await getKanjiForPhoto(photo.id);
@@ -1178,6 +1379,85 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
     },
     [detail, ensureMetaForKeys, fullImagePhoto?.id, loadPhotosForDetail, reloadGallery, reloadList, screen]
+  );
+
+  const replacePhotoWithSource = useCallback(
+    async (photo: PhotoEntry, sourceUri: string) => {
+      setProcessingPhotoType(photo.type);
+      setProcessing(true);
+      setProcessingStatus('Replacing photo…');
+      const updatedAt = Date.now();
+      try {
+        const storedUri = await savePhotoToStorage(sourceUri);
+
+        // Clear prior associations before re-running OCR.
+        await setPhotoKanjiCounts(photo.id, photo.type, {});
+        await setPhotoWordCounts(photo.id, photo.type, {});
+
+        const ocrText = await processImage(storedUri, photo.type === 'practice');
+        const { kanjiCounts, wordCounts } = await extractKanjiAndWordsWithCountsSmart(ocrText);
+
+        await updatePhotoUri(photo.id, storedUri, updatedAt);
+
+        if (Object.keys(kanjiCounts).length) {
+          await setPhotoKanjiCounts(photo.id, photo.type, kanjiCounts);
+        }
+        if (Object.keys(wordCounts).length) {
+          await setPhotoWordCounts(photo.id, photo.type, wordCounts);
+        }
+
+        const patchPhoto = (p: PhotoEntry | null): PhotoEntry | null =>
+          p && p.id === photo.id ? { ...p, uri: storedUri, created_at: updatedAt } : p;
+
+        setAllPhotos((prev) => prev.map((p) => (p.id === photo.id ? { ...p, uri: storedUri, created_at: updatedAt } : p)));
+        setFullImagePhoto((p) => patchPhoto(p));
+        setFullImagePhotos((prev) => prev.map((p) => (p.id === photo.id ? { ...p, uri: storedUri, created_at: updatedAt } : p)));
+        setDetailPhotos((prev) => prev.map((p) => (p.id === photo.id ? { ...p, uri: storedUri, created_at: updatedAt } : p)));
+
+        await reloadList();
+        if (screen === 'gallery') {
+          await reloadGallery();
+        }
+        if (screen === 'detail' && detail) {
+          const photos = await loadPhotosForDetail(detail);
+          setDetailPhotos(photos);
+        }
+
+        const kanji = await getKanjiForPhoto(photo.id);
+        const words = await getWordsForPhoto(photo.id);
+        if (fullImagePhoto?.id === photo.id) {
+          setFullImageMeta({ kanji, words });
+          ensureMetaForKeys([...kanji.map((k) => `kanji:${k}`), ...words.map((w) => `word:${w}`)]).catch((e) => console.error(e));
+        }
+
+        await deletePhotoFromStorage(photo.uri);
+      } catch (e) {
+        console.error(e);
+        Alert.alert('Error', 'Failed to replace the photo.');
+      } finally {
+        setProcessing(false);
+        setProcessingStatus('Processing…');
+        setProcessingPhotoType(null);
+      }
+    },
+    [
+      detail,
+      deletePhotoFromStorage,
+      ensureMetaForKeys,
+      fullImagePhoto?.id,
+      getKanjiForPhoto,
+      getWordsForPhoto,
+      loadPhotosForDetail,
+      processImage,
+      reloadGallery,
+      reloadList,
+      screen,
+      savePhotoToStorage,
+      extractKanjiAndWordsWithCountsSmart,
+      updatePhotoUri,
+      setPhotoKanjiCounts,
+      setPhotoWordCounts,
+    ]
   );
 
   const deletePhotos = useCallback(
@@ -1376,6 +1656,51 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [processCapturedUri, processCapturedUris, requestMediaPerms]);
 
+  const retakeFromCamera = useCallback(
+    async (photo: PhotoEntry) => {
+      const ok = await requestCameraPerms();
+      if (!ok) return;
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        quality: 0.8,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      await replacePhotoWithSource(photo, result.assets[0].uri);
+    },
+    [replacePhotoWithSource, requestCameraPerms]
+  );
+
+  const retakeFromGallery = useCallback(
+    async (photo: PhotoEntry) => {
+      const ok = await requestMediaPerms();
+      if (!ok) return;
+      setPickerBusy(true);
+      setPickerBusyPhotoType(photo.type);
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsMultipleSelection: false,
+        selectionLimit: 1,
+        quality: 0.8,
+      });
+      setPickerBusy(false);
+      setPickerBusyPhotoType(null);
+      if (result.canceled || !result.assets?.length) return;
+      await replacePhotoWithSource(photo, result.assets[0].uri);
+    },
+    [replacePhotoWithSource, requestMediaPerms]
+  );
+
+  const retakePhoto = useCallback(
+    (photo: PhotoEntry) => {
+      Alert.alert('Replace photo', 'Capture a new photo or pick from gallery.', [
+        { text: 'Camera', onPress: () => retakeFromCamera(photo) },
+        { text: 'Upload', onPress: () => retakeFromGallery(photo) },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    },
+    [retakeFromCamera, retakeFromGallery]
+  );
+
   const listValue: ListContextType = useMemo(
     () => ({
       loading,
@@ -1454,6 +1779,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setWordKanjiModal,
     fullImagePhoto,
     setFullImagePhoto,
+    fullImagePhotos,
+    fullImageIndex,
+    setFullImageIndex,
     fullImageMeta,
     setFullImageMeta,
     fullImageMenuVisible,
@@ -1462,11 +1790,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setFullImageMenuTab,
     fullImageMenuScrollY,
     setFullImageMenuScrollY,
+    closeFullImageViewer,
     processing,
     processingStatus,
     processingPhotoType,
     pickerBusy,
     pickerBusyPhotoType,
+    initialLoadVisible: initialLoadStatus.visible,
+    initialLoadLabel: initialLoadStatus.label,
+    initialLoadProgress: initialLoadStatus.progress,
     uiBusy,
     uiBusyLabel,
     hiddenKanjiItems,
@@ -1477,6 +1809,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     saveEditForPhoto,
     applyEditsForPhoto,
     reprocessPhoto,
+    retakePhoto,
+    retakeFromCamera,
+    retakeFromGallery,
     deletePhotos,
     onDeletePhoto,
     captureFromCamera,
@@ -1485,6 +1820,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     filteredSorted,
     combinedSearchResults,
     normalizedQuery,
+    retakeFromCamera,
+    retakeFromGallery,
   };
 
   return (

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, ActivityIndicator } from 'react-native';
+import { View, Text, ActivityIndicator, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, styles } from '../styles/theme';
 import { useAppContext } from '../context/AppContext';
@@ -34,6 +34,9 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
     pickerBusyPhotoType,
     uiBusy,
     uiBusyLabel,
+    initialLoadVisible,
+    initialLoadLabel,
+    initialLoadProgress,
     editModal,
     setEditModal,
     captureModal,
@@ -42,14 +45,17 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
     setWordKanjiModal,
     fullImagePhoto,
     setFullImagePhoto,
+    fullImagePhotos,
+    fullImageIndex,
+    setFullImageIndex,
     fullImageMeta,
-    setFullImageMeta,
     fullImageMenuVisible,
     setFullImageMenuVisible,
     fullImageMenuTab,
     setFullImageMenuTab,
     fullImageMenuScrollY,
     setFullImageMenuScrollY,
+    closeFullImageViewer,
     metaCache,
     openDetail,
     openGallery,
@@ -57,6 +63,8 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
     saveEditForPhoto,
     applyEditsForPhoto,
     reprocessPhoto,
+    retakeFromCamera,
+    retakeFromGallery,
     onDeletePhoto,
     captureFromCamera,
     pickFromGallery,
@@ -76,8 +84,7 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
       return true;
     }
     if (fullImagePhoto) {
-      setFullImagePhoto(null);
-      setFullImageMeta(null);
+      closeFullImageViewer();
       return true;
     }
     if (editModal.visible) {
@@ -108,8 +115,7 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
     setCaptureModal,
     setEditModal,
     setFullImageMenuVisible,
-    setFullImagePhoto,
-    setFullImageMeta,
+    closeFullImageViewer,
     goBack,
   ]);
 
@@ -130,10 +136,8 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
   }, [setWordKanjiModal]);
 
   const handleCloseFullImage = useCallback(() => {
-    setFullImageMenuVisible(false);
-    setFullImagePhoto(null);
-    setFullImageMeta(null);
-  }, [setFullImageMenuVisible, setFullImagePhoto, setFullImageMeta]);
+    closeFullImageViewer();
+  }, [closeFullImageViewer]);
 
   const handleToggleFullImageMenu = useCallback(() => {
     setFullImageMenuVisible((v) => !v);
@@ -189,6 +193,30 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
         onNavigateToGallery={openGallery}
       />
 
+      <Modal
+        transparent
+        visible={initialLoadVisible}
+        animationType="fade"
+        onRequestClose={() => {}}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center' }}>
+          <View style={{ backgroundColor: colors.surface, padding: 20, borderRadius: 12, width: '82%', maxWidth: 380, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 12, elevation: 6 }}>
+            <Text style={{ color: colors.text, fontSize: 16, fontWeight: '600', marginBottom: 12 }}>Preparing your library…</Text>
+            <Text style={{ color: colors.textMuted, marginBottom: 12 }}>{initialLoadLabel || 'Loading…'}</Text>
+            <View style={{ height: 10, borderRadius: 6, backgroundColor: colors.accentSubtle, overflow: 'hidden' }}>
+              <View
+                style={{
+                  height: '100%',
+                  width: `${Math.max(5, Math.min(100, Math.round(initialLoadProgress * 100)))}%`,
+                  backgroundColor: colors.accent,
+                }}
+              />
+            </View>
+            <Text style={{ color: colors.textMuted, marginTop: 8, fontSize: 12 }}>{`${Math.round(initialLoadProgress * 100)}%`}</Text>
+          </View>
+        </View>
+      </Modal>
+
       <UiBusyModal visible={uiBusy} label={uiBusyLabel} />
 
       {(processing || pickerBusy) && (() => {
@@ -229,6 +257,8 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
 
       <FullImageModal
         photo={fullImagePhoto}
+        photos={fullImagePhotos}
+        imageIndex={fullImageIndex}
         meta={fullImageMeta}
         metaCache={metaCache}
         menuVisible={fullImageMenuVisible}
@@ -237,9 +267,12 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
         onMenuTabChange={setFullImageMenuTab}
         scrollY={fullImageMenuScrollY}
         onScrollYChange={setFullImageMenuScrollY}
+        onIndexChange={setFullImageIndex}
         onClose={handleCloseFullImage}
         onToggleMenu={handleToggleFullImageMenu}
         onReprocess={handleReprocessFromFullImage}
+        onRetakeCamera={retakeFromCamera}
+        onRetakeGallery={retakeFromGallery}
         onApplyEdits={handleApplyEditsFromFullImage}
         onOpenKanji={handleOpenKanjiFromFullImage}
         onOpenWord={handleOpenWordFromFullImage}

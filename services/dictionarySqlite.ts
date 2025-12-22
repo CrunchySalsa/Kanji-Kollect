@@ -127,13 +127,12 @@ async function importWords(db: SQLite.SQLiteDatabase): Promise<void> {
     }
 
     await db.withExclusiveTransactionAsync(async (txn) => {
-      const stmt = await txn.prepareAsync('INSERT OR REPLACE INTO words (surface, reading, meanings_json) VALUES (?, ?, ?)');
-      try {
-        for (const [surface, reading, meanings] of bucket) {
-          await stmt.executeAsync(surface, reading, JSON.stringify(meanings ?? []));
-        }
-      } finally {
-        await stmt.finalizeAsync();
+      for (const [surface, reading, meanings] of bucket) {
+        await txn.runAsync('INSERT OR REPLACE INTO words (surface, reading, meanings_json) VALUES (?, ?, ?)', [
+          surface,
+          reading,
+          JSON.stringify(meanings ?? []),
+        ]);
       }
     });
 
@@ -154,23 +153,14 @@ async function importKanji(db: SQLite.SQLiteDatabase): Promise<void> {
   for (let i = 0; i < entries.length; i += batchSize) {
     const slice = entries.slice(i, i + batchSize);
     await db.withExclusiveTransactionAsync(async (txn) => {
-      const stmt = await txn.prepareAsync(
-        'INSERT OR REPLACE INTO kanji (character, onyomi_json, kunyomi_json, meanings_json) VALUES (?, ?, ?, ?)'
-      );
-      try {
-        for (const [character, data] of slice) {
-          const onyomi = data?.readings?.onyomi ?? [];
-          const kunyomi = data?.readings?.kunyomi ?? [];
-          const meanings = data?.meanings ?? [];
-          await stmt.executeAsync(
-            character,
-            JSON.stringify(onyomi),
-            JSON.stringify(kunyomi),
-            JSON.stringify(meanings)
-          );
-        }
-      } finally {
-        await stmt.finalizeAsync();
+      for (const [character, data] of slice) {
+        const onyomi = data?.readings?.onyomi ?? [];
+        const kunyomi = data?.readings?.kunyomi ?? [];
+        const meanings = data?.meanings ?? [];
+        await txn.runAsync(
+          'INSERT OR REPLACE INTO kanji (character, onyomi_json, kunyomi_json, meanings_json) VALUES (?, ?, ?, ?)',
+          [character, JSON.stringify(onyomi), JSON.stringify(kunyomi), JSON.stringify(meanings)]
+        );
       }
     });
     await yieldToJs();

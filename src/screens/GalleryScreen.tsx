@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { View, Text, FlatList, Animated, Dimensions, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, FlatList, Animated, Dimensions, TouchableOpacity, Alert, StyleSheet } from 'react-native';
 import { styles } from '../styles/theme';
 import { useAppContext } from '../context/AppContext';
 import { useSwipePager } from '../hooks';
@@ -14,10 +14,18 @@ export function GalleryScreen() {
     galleryLoading,
     openFullImage,
     deletePhotos,
+    captureFromCamera,
+    pickFromGallery,
   } = useAppContext();
 
   const [galleryWidth, setGalleryWidth] = useState(() => Dimensions.get('window').width);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
+  const [fabMenuOpen, setFabMenuOpen] = useState(false);
+
+  const activeColor = galleryType === 'encounter' ? styles.encBtn.backgroundColor : styles.pracBtn.backgroundColor;
+  const fabBg = `${activeColor}CC`; // 80% opacity
+  const fabMenuItemBg = `${activeColor}CC`;
+  const fabMenuBorder = `${activeColor}88`;
 
   const selectionActive = selectedIds.size > 0;
 
@@ -72,6 +80,16 @@ export function GalleryScreen() {
       },
     ]);
   }, [clearSelection, deletePhotos, selectedPhotos]);
+
+  const handleFabCamera = useCallback(() => {
+    setFabMenuOpen(false);
+    captureFromCamera(galleryType);
+  }, [captureFromCamera, galleryType]);
+
+  const handleFabGallery = useCallback(() => {
+    setFabMenuOpen(false);
+    pickFromGallery(galleryType);
+  }, [galleryType, pickFromGallery]);
 
   return (
     <View style={{ flex: 1 }}>
@@ -133,7 +151,9 @@ export function GalleryScreen() {
                     <PhotoThumbnail
                       photo={item}
                       selected={selectedIds.has(item.id)}
-                      onPress={() => (selectionActive ? toggleSelected(item.id) : openFullImage(item))}
+                    onPress={() =>
+                      selectionActive ? toggleSelected(item.id) : openFullImage(item, { photos: encounterPhotos })
+                    }
                       onLongPress={() => toggleSelected(item.id)}
                     />
                   )}
@@ -154,7 +174,9 @@ export function GalleryScreen() {
                     <PhotoThumbnail
                       photo={item}
                       selected={selectedIds.has(item.id)}
-                      onPress={() => (selectionActive ? toggleSelected(item.id) : openFullImage(item))}
+                    onPress={() =>
+                      selectionActive ? toggleSelected(item.id) : openFullImage(item, { photos: practicePhotos })
+                    }
                       onLongPress={() => toggleSelected(item.id)}
                     />
                   )}
@@ -164,6 +186,36 @@ export function GalleryScreen() {
           </Animated.View>
         </View>
       )}
+
+      {fabMenuOpen ? (
+        <TouchableOpacity
+          style={StyleSheet.absoluteFillObject}
+          activeOpacity={1}
+          onPress={() => setFabMenuOpen(false)}
+        />
+      ) : null}
+
+      <View style={styles.fabContainer} pointerEvents="box-none">
+        {fabMenuOpen ? (
+          <View style={[styles.fabMenu, { backgroundColor: `${fabMenuItemBg}22`, borderColor: fabMenuBorder }]}>
+            <TouchableOpacity style={[styles.fabMenuItem, { backgroundColor: fabMenuItemBg }]} onPress={handleFabCamera} activeOpacity={0.85}>
+              <Text style={[styles.fabMenuItemText, { color: styles.bottomBtnText.color }]}>Add from camera</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.fabMenuItem, { backgroundColor: fabMenuItemBg }]} onPress={handleFabGallery} activeOpacity={0.85}>
+              <Text style={[styles.fabMenuItemText, { color: styles.bottomBtnText.color }]}>Choose from gallery</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
+        <TouchableOpacity
+          style={[styles.fab, { backgroundColor: fabBg }]}
+          onPress={() => setFabMenuOpen((v) => !v)}
+          activeOpacity={0.85}
+          accessibilityLabel="Add photo"
+        >
+          <Text style={styles.fabIcon}>＋</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }

@@ -185,7 +185,7 @@ export function DetailScreen() {
           <PhotoThumbnail
             key={item.id}
             photo={item}
-            onPress={() => openFullImage(item)}
+            onPress={() => openFullImage(item, { photos })}
             onLongPress={() => onDeletePhoto(item)}
           />
         ))}

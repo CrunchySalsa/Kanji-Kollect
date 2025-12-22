@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, Modal, TouchableOpacity } from 'react-native';
+import { View, Text, Modal, TouchableOpacity, TouchableWithoutFeedback } from 'react-native';
 import { styles } from '../../styles/theme';
 import { CaptureModalState, PhotoType } from '../../types';
 
@@ -13,36 +13,38 @@ interface CaptureModalProps {
 export function CaptureModal({ state, onClose, onCamera, onGallery }: CaptureModalProps) {
   return (
     <Modal visible={state.visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.modalOverlay}>
-        <View style={styles.modalCard}>
-          <Text style={styles.modalTitle}>
-            {state.photoType === 'encounter' ? 'New Encounter' : 'Add Practice'}
-          </Text>
-          <TouchableOpacity
-            style={styles.modalBtn}
-            onPress={() => {
-              const t = state.photoType;
-              onClose();
-              if (t) onCamera(t);
-            }}
-          >
-            <Text style={styles.modalBtnText}>Camera</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.modalBtn}
-            onPress={() => {
-              const t = state.photoType;
-              onClose();
-              if (t) onGallery(t);
-            }}
-          >
-            <Text style={styles.modalBtnText}>Choose from Gallery</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.modalBtn, styles.modalCancel]} onPress={onClose}>
-            <Text style={styles.modalBtnText}>Cancel</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+      <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={onClose}>
+        <TouchableWithoutFeedback>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>
+              {state.photoType === 'encounter' ? 'New Encounter' : 'Add Practice'}
+            </Text>
+            <TouchableOpacity
+              style={styles.modalBtn}
+              onPress={() => {
+                const t = state.photoType;
+                onClose();
+                if (t) onCamera(t);
+              }}
+            >
+              <Text style={styles.modalBtnText}>Camera</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.modalBtn}
+              onPress={() => {
+                const t = state.photoType;
+                onClose();
+                if (t) onGallery(t);
+              }}
+            >
+              <Text style={styles.modalBtnText}>Choose from Gallery</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.modalBtn, styles.modalCancel]} onPress={onClose}>
+              <Text style={styles.modalBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableWithoutFeedback>
+      </TouchableOpacity>
     </Modal>
   );
 }

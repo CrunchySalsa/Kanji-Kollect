@@ -1623,7 +1623,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!ok) return;
     setPickerBusy(true);
     setPickerBusyPhotoType(photoType);
-    setProcessingPhotoType(photoType);
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsMultipleSelection: true,
@@ -1633,16 +1632,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (result.canceled) {
       setPickerBusy(false);
       setPickerBusyPhotoType(null);
-      setProcessingPhotoType(null);
       return;
     }
     const uris = result.assets.map((a) => a.uri).filter(Boolean);
     if (!uris.length) {
       setPickerBusy(false);
       setPickerBusyPhotoType(null);
-      setProcessingPhotoType(null);
       return;
     }
+    setProcessingPhotoType(photoType);
     setProcessing(true);
     setProcessingStatus(`Loading ${uris.length} photo${uris.length > 1 ? 's' : ''}…`);
     setPickerBusy(false);

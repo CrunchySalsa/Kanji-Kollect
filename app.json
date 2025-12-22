@@ -4,7 +4,7 @@
     "slug": "kanji-kollect",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/app-icon/app-icon.png",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "scheme": "kanji-kollect",
@@ -22,7 +22,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/app-icon/adaptive-icon.png",
         "backgroundColor": "#1a1a2e"
       },
       "edgeToEdgeEnabled": true,

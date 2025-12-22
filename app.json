@@ -6,7 +6,7 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "scheme": "kanji-kollect",
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -30,7 +30,7 @@
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE"
       ],
-      "package": "com.crunchysalsa.kanjikollect"
+        "package": "com.crunchysalsa.kanjikollect"
     },
     "web": {
       "favicon": "./assets/favicon.png",
@@ -47,7 +47,7 @@
     ],
     "extra": {
       "eas": {
-        "projectId": ""
+        "projectId": "87701dfa-f2e8-411c-a5a0-cbe529e3e629"
       }
     }
   }

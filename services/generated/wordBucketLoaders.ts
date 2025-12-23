@@ -5,7 +5,7 @@
  */
 /* eslint-disable @typescript-eslint/no-var-requires */
 
-export type WordEntryTuple = readonly [string, string, string[]]; // [surface, reading, meanings]
+export type WordEntryTuple = readonly [string, string, string[], string[]]; // [surface, reading, meanings, pos]
 
 export const WORD_BUCKET_COUNT = 64 as const;
 

@@ -71,8 +71,24 @@ export function FullImageModal({
   // Track scroll positions in refs to avoid re-renders during scroll
   const kanjiScrollYRef = useRef(scrollY.kanji);
   const wordScrollYRef = useRef(scrollY.word);
+  const kanjiContentHRef = useRef(0);
+  const kanjiViewportHRef = useRef(0);
+  const wordContentHRef = useRef(0);
+  const wordViewportHRef = useRef(0);
   const lastPhotoIdRef = useRef<number | null>(null);
   const prevMenuVisibleRef = useRef(false);
+  const prevMenuVisibleForRestoreRef = useRef(false);
+  const lastRestoredRef = useRef<{ photoId: number | null; kanji: number; word: number }>({ photoId: null, kanji: 0, word: 0 });
+
+  const clampScrollY = useCallback((kind: 'kanji' | 'word', y: number) => {
+    const contentH = kind === 'kanji' ? kanjiContentHRef.current : wordContentHRef.current;
+    const viewportH = kind === 'kanji' ? kanjiViewportHRef.current : wordViewportHRef.current;
+    if (!Number.isFinite(y)) return 0;
+    // If metrics are not available yet (initial mount), only clamp negative values.
+    if (contentH <= 0 || viewportH <= 0) return Math.max(0, y);
+    const maxY = Math.max(0, contentH - viewportH);
+    return Math.max(0, Math.min(y, maxY));
+  }, []);
 
   useEffect(() => {
     const prevMenuVisible = prevMenuVisibleRef.current;
@@ -103,17 +119,35 @@ export function FullImageModal({
   }, [photo?.id, menuVisible]);
 
   useEffect(() => {
+    const wasVisible = prevMenuVisibleForRestoreRef.current;
+    prevMenuVisibleForRestoreRef.current = menuVisible;
     if (!menuVisible) return;
-    // Restore scroll positions on open (and after Back-restore).
-    kanjiScrollYRef.current = scrollY.kanji;
-    wordScrollYRef.current = scrollY.word;
+    // Restore scroll positions on open (and after Back-restore), but avoid fighting live scrolling.
+    const nextKanjiY = clampScrollY('kanji', scrollY.kanji);
+    const nextWordY = clampScrollY('word', scrollY.word);
+
+    const justOpened = !wasVisible && menuVisible;
+    const photoId = photo?.id ?? null;
+    const last = lastRestoredRef.current;
+    const needsRestore =
+      justOpened ||
+      last.photoId !== photoId ||
+      Math.abs(nextKanjiY - kanjiScrollYRef.current) > 2 ||
+      Math.abs(nextWordY - wordScrollYRef.current) > 2;
+
+    if (!needsRestore) return;
+
+    lastRestoredRef.current = { photoId, kanji: nextKanjiY, word: nextWordY };
+    kanjiScrollYRef.current = nextKanjiY;
+    wordScrollYRef.current = nextWordY;
+
     requestAnimationFrame(() => {
       try {
-        kanjiScrollRef.current?.scrollTo({ y: kanjiScrollYRef.current, animated: false });
-        wordScrollRef.current?.scrollTo({ y: wordScrollYRef.current, animated: false });
+        kanjiScrollRef.current?.scrollTo({ y: nextKanjiY, animated: false });
+        wordScrollRef.current?.scrollTo({ y: nextWordY, animated: false });
       } catch {}
     });
-  }, [menuVisible, photo?.id, scrollY.kanji, scrollY.word]);
+  }, [clampScrollY, menuVisible, photo?.id, scrollY.kanji, scrollY.word]);
 
   useEffect(() => {
     if (!editMode) return;
@@ -265,20 +299,22 @@ export function FullImageModal({
           <Text style={styles.fullCloseText}>✕</Text>
         </TouchableOpacity>
 
-        <View
-          {...swipeUpResponder.panHandlers}
-          style={{
-            position: 'absolute',
-            bottom: 0,
-            left: 0,
-            right: 0,
-            height: 90,
-            zIndex: 2,
-          }}
-        />
+        {!menuVisible && (
+          <View
+            {...swipeUpResponder.panHandlers}
+            style={{
+              position: 'absolute',
+              bottom: 0,
+              left: 0,
+              right: 0,
+              height: 90,
+              zIndex: 2,
+            }}
+          />
+        )}
 
         {menuVisible && photo && (
-          <View style={styles.fullMenu}>
+          <View style={[styles.fullMenu, { paddingBottom: Math.max(insets.bottom, 20) + 10, zIndex: 10 }]}>
             <View style={{ flexDirection: 'row', gap: 10 }}>
               <TouchableOpacity
                 style={[styles.modalBtn, { flex: 1, paddingVertical: 10, opacity: reprocessBusy ? 0.7 : 1 }]}
@@ -362,11 +398,22 @@ export function FullImageModal({
                           kanjiScrollRef.current = r;
                         }}
                         contentContainerStyle={{ paddingBottom: 4 }}
+                        onLayout={(e) => {
+                          kanjiViewportHRef.current = e.nativeEvent.layout.height;
+                        }}
+                        onContentSizeChange={(_, h) => {
+                          kanjiContentHRef.current = h;
+                        }}
                         onScroll={(e) => {
-                          kanjiScrollYRef.current = e.nativeEvent.contentOffset.y;
+                          kanjiScrollYRef.current = clampScrollY('kanji', e.nativeEvent.contentOffset.y);
                         }}
                         scrollEventThrottle={100}
-                        onMomentumScrollEnd={() => onScrollYChange({ kanji: kanjiScrollYRef.current, word: wordScrollYRef.current })}
+                        onMomentumScrollEnd={() =>
+                          onScrollYChange({
+                            kanji: clampScrollY('kanji', kanjiScrollYRef.current),
+                            word: clampScrollY('word', wordScrollYRef.current),
+                          })
+                        }
                       >
                         {kanjiRows.length ? (
                           <View style={{ marginTop: 10 }}>
@@ -396,11 +443,22 @@ export function FullImageModal({
                           wordScrollRef.current = r;
                         }}
                         contentContainerStyle={{ paddingBottom: 4 }}
+                        onLayout={(e) => {
+                          wordViewportHRef.current = e.nativeEvent.layout.height;
+                        }}
+                        onContentSizeChange={(_, h) => {
+                          wordContentHRef.current = h;
+                        }}
                         onScroll={(e) => {
-                          wordScrollYRef.current = e.nativeEvent.contentOffset.y;
+                          wordScrollYRef.current = clampScrollY('word', e.nativeEvent.contentOffset.y);
                         }}
                         scrollEventThrottle={100}
-                        onMomentumScrollEnd={() => onScrollYChange({ kanji: kanjiScrollYRef.current, word: wordScrollYRef.current })}
+                        onMomentumScrollEnd={() =>
+                          onScrollYChange({
+                            kanji: clampScrollY('kanji', kanjiScrollYRef.current),
+                            word: clampScrollY('word', wordScrollYRef.current),
+                          })
+                        }
                       >
                         {wordRows.length ? (
                           <View style={{ marginTop: 10 }}>

@@ -13,11 +13,12 @@ type WordRow = {
   surface: string;
   reading: string;
   meanings_json: string;
+  pos_json: string;
 };
 
 const DICT_DB_NAME = 'dictionary.db';
 const DICT_BUILD_DB_NAME = 'dictionary.build.db';
-const DICT_DB_VERSION = 1;
+const DICT_DB_VERSION = 2;
 
 let dictDbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let buildDbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -98,6 +99,7 @@ async function ensureSchema(db: SQLite.SQLiteDatabase): Promise<void> {
           surface       TEXT PRIMARY KEY,
           reading       TEXT NOT NULL,
           meanings_json TEXT NOT NULL
+          ,pos_json     TEXT NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_words_surface ON words(surface);
@@ -127,11 +129,12 @@ async function importWords(db: SQLite.SQLiteDatabase): Promise<void> {
     }
 
     await db.withExclusiveTransactionAsync(async (txn) => {
-      for (const [surface, reading, meanings] of bucket) {
-        await txn.runAsync('INSERT OR REPLACE INTO words (surface, reading, meanings_json) VALUES (?, ?, ?)', [
+      for (const [surface, reading, meanings, pos] of bucket) {
+        await txn.runAsync('INSERT OR REPLACE INTO words (surface, reading, meanings_json, pos_json) VALUES (?, ?, ?, ?)', [
           surface,
           reading,
           JSON.stringify(meanings ?? []),
+          JSON.stringify(pos ?? []),
         ]);
       }
     });
@@ -273,7 +276,7 @@ export async function lookupWordSqlite(surface: string): Promise<WordRow | null>
   const db = await getDictionaryDbIfReady();
   if (!db) return null;
   return await db.getFirstAsync<WordRow>(
-    'SELECT surface, reading, meanings_json FROM words WHERE surface = ?',
+    'SELECT surface, reading, meanings_json, pos_json FROM words WHERE surface = ?',
     [surface]
   );
 }
@@ -283,7 +286,7 @@ export async function lookupWordPrefixCandidatesSqlite(prefix: string, limit: nu
   if (!db) return null;
   // ORDER BY surface allows scanning lexicographically similar to the JSON binary search approach.
   return await db.getAllAsync<WordRow>(
-    'SELECT surface, reading, meanings_json FROM words WHERE surface LIKE ? ORDER BY surface LIMIT ?',
+    'SELECT surface, reading, meanings_json, pos_json FROM words WHERE surface LIKE ? ORDER BY surface LIMIT ?',
     [`${prefix}%`, limit]
   );
 }
@@ -325,7 +328,7 @@ export async function lookupWordBatchSqlite(surfaces: string[]): Promise<Map<str
   if (!db) return null;
   const placeholders = surfaces.map(() => '?').join(',');
   const rows = await db.getAllAsync<WordRow>(
-    `SELECT surface, reading, meanings_json FROM words WHERE surface IN (${placeholders})`,
+    `SELECT surface, reading, meanings_json, pos_json FROM words WHERE surface IN (${placeholders})`,
     surfaces
   );
   const map = new Map<string, WordRow>();

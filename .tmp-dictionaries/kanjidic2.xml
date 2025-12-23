@@ -335,8 +335,8 @@
 	and KANJD212 files plus the kanji from JIS X 0213.
 -->
 <file_version>4</file_version>
-<database_version>2025-347</database_version>
-<date_of_creation>2025-12-13</date_of_creation>
+<database_version>2025-356</database_version>
+<date_of_creation>2025-12-22</date_of_creation>
 </header>
 <!-- Entry for Kanji: 亜 -->
 <character>
@@ -318903,7 +318903,9 @@
 <reading r_type="korean_r">pyo</reading>
 <reading r_type="korean_h">표</reading>
 <reading r_type="vietnam">Bưu</reading>
-<reading r_type="ja_on">ショウ</reading>
+<reading r_type="ja_on">ヒュウ</reading>
+<reading r_type="ja_on">ヒョウ</reading>
+<reading r_type="ja_on">シュウ</reading>
 <meaning>many horses</meaning>
 </rmgroup>
 <nanori>とどろ</nanori>

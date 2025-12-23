@@ -57,6 +57,52 @@ function getWordBucketJson(key: string): readonly WordEntryTuple[] {
   }
 }
 
+const EXCLUDED_POS = new Set([
+  'prt',
+  'cop',
+  'aux-v',
+  'aux-adj',
+  'aux',
+  'suf',
+  'pref',
+  'n-pref',
+  'n-suf',
+  'conj',
+  'unc',
+]);
+
+function normalizeEntityTag(t: string): string {
+  const s = t.replace(/^&/, '').replace(/;$/, '').trim();
+  // Backward compatibility: if buckets were built with entity-expansion enabled,
+  // POS tags may be English descriptions (e.g. "particle") instead of codes ("prt").
+  switch (s) {
+    case 'particle':
+      return 'prt';
+    case 'copula':
+      return 'cop';
+    case 'auxiliary verb':
+      return 'aux-v';
+    case 'auxiliary adjective':
+      return 'aux-adj';
+    case 'auxiliary':
+      return 'aux';
+    default:
+      return s;
+  }
+}
+
+function isExcludedPos(pos: readonly string[] | undefined | null): boolean {
+  if (!pos || !pos.length) return false;
+  // Only exclude if ALL POS tags are in the blocklist.
+  // This prevents filtering out words like "救われない" (hopeless) that have
+  // a content meaning (adj-i) alongside a grammatical tag.
+  for (const p of pos) {
+    const tag = normalizeEntityTag(String(p ?? ''));
+    if (!EXCLUDED_POS.has(tag)) return false; // Has at least one non-excluded tag
+  }
+  return true; // All tags were excluded
+}
+
 export async function lookupKanji(character: string): Promise<KanjiInfo | null> {
   const row = await lookupKanjiSqlite(character);
   if (row) {
@@ -113,6 +159,8 @@ export async function lookupWord(word: string): Promise<WordInfo | null> {
   const row = await lookupWordSqlite(word);
   if (row) {
     const meaning = JSON.parse(row.meanings_json ?? '[]') as string[];
+    const pos = JSON.parse(row.pos_json ?? '[]') as string[];
+    if (isExcludedPos(pos)) return null;
     return { word: row.surface, reading: row.reading, meaning };
   }
 
@@ -121,6 +169,7 @@ export async function lookupWord(word: string): Promise<WordInfo | null> {
   if (!entries.length) return null;
   const hit = binarySearchWord(entries, word);
   if (!hit) return null;
+  if (isExcludedPos(hit[3])) return null;
   return { word, reading: hit[1], meaning: hit[2] };
 }
 
@@ -179,6 +228,8 @@ async function lookupWordByPrefixUnique(prefix: string): Promise<WordInfo | null
       if (!surface.startsWith(prefix)) break;
       const remainder = surface.slice(prefix.length);
       if (!remainder || isAllHiragana(remainder)) {
+        const pos = JSON.parse(r.pos_json ?? '[]') as string[];
+        if (isExcludedPos(pos)) continue;
         candidates.push({
           surface,
           reading: r.reading,
@@ -205,7 +256,10 @@ async function lookupWordByPrefixUnique(prefix: string): Promise<WordInfo | null
     const surface = entries[i][0];
     if (!surface.startsWith(prefix)) break;
     const remainder = surface.slice(prefix.length);
-    if (!remainder || isAllHiragana(remainder)) candidates.push(entries[i]);
+    if (!remainder || isAllHiragana(remainder)) {
+      if (isExcludedPos(entries[i][3])) continue;
+      candidates.push(entries[i]);
+    }
   }
 
   if (candidates.length !== 1) return null;
@@ -331,7 +385,10 @@ export async function lookupWordBatch(words: string[]): Promise<Map<string, Word
       const row = sqliteMap.get(w);
       if (row) {
         const meaning = JSON.parse(row.meanings_json ?? '[]') as string[];
-        results.set(w, { word: row.surface, reading: row.reading, meaning });
+        const pos = JSON.parse(row.pos_json ?? '[]') as string[];
+        if (!isExcludedPos(pos)) {
+          results.set(w, { word: row.surface, reading: row.reading, meaning });
+        }
       } else {
         remaining.push(w);
       }
@@ -358,7 +415,9 @@ export async function lookupWordBatch(words: string[]): Promise<Map<string, Word
         for (const w of wordsInBucket) {
           const hit = binarySearchWord(entries, w);
           if (hit) {
-            results.set(w, { word: w, reading: hit[1], meaning: hit[2] });
+            if (!isExcludedPos(hit[3])) {
+              results.set(w, { word: w, reading: hit[1], meaning: hit[2] });
+            }
           }
         }
       })

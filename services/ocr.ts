@@ -10,6 +10,11 @@ export class OcrError extends Error {
   }
 }
 
+export interface OcrResult {
+  text: string;
+  words: string[];
+}
+
 /**
  * Process an image and extract Japanese text using OCR.
  * Uses Google Cloud Vision API.
@@ -20,7 +25,7 @@ export class OcrError extends Error {
  * @returns Extracted text from the image
  * @throws {OcrError} When OCR fails or API key is missing
  */
-export async function processImage(imageUri: string, apiKey: string | null, _isHandwritten: boolean = false): Promise<string> {
+export async function processImage(imageUri: string, apiKey: string | null, _isHandwritten: boolean = false): Promise<OcrResult> {
   if (!apiKey) {
     throw new OcrError('No API key configured. Please add your Google Cloud Vision API key in Settings.');
   }
@@ -31,7 +36,7 @@ export async function processImage(imageUri: string, apiKey: string | null, _isH
 /**
  * Attempt OCR using Google Cloud Vision API.
  */
-async function tryCloudOcr(imageUri: string, apiKey: string): Promise<string> {
+async function tryCloudOcr(imageUri: string, apiKey: string): Promise<OcrResult> {
   // Read image as base64
   let base64Image: string;
   try {
@@ -56,7 +61,7 @@ async function tryCloudOcr(imageUri: string, apiKey: string): Promise<string> {
           requests: [
             {
               image: { content: base64Image },
-              features: [{ type: 'TEXT_DETECTION' }],
+              features: [{ type: 'DOCUMENT_TEXT_DETECTION' }],
               imageContext: {
                 languageHints: ['ja'],
               },
@@ -101,7 +106,26 @@ async function tryCloudOcr(imageUri: string, apiKey: string): Promise<string> {
   }
 
   const text = data.responses?.[0]?.fullTextAnnotation?.text ?? '';
-  return text;
+
+  const words: string[] = [];
+  const pages = data.responses?.[0]?.fullTextAnnotation?.pages ?? [];
+  for (const page of pages) {
+    const blocks = page?.blocks ?? [];
+    for (const block of blocks) {
+      const paragraphs = block?.paragraphs ?? [];
+      for (const paragraph of paragraphs) {
+        const wordNodes = paragraph?.words ?? [];
+        for (const w of wordNodes) {
+          const symbols = w?.symbols ?? [];
+          if (!symbols.length) continue;
+          const s = symbols.map((sym: any) => sym?.text ?? '').join('');
+          if (s) words.push(s);
+        }
+      }
+    }
+  }
+
+  return { text, words };
 }
 
 /**

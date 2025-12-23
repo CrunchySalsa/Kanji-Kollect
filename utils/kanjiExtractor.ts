@@ -2,7 +2,7 @@
  * Utility to extract Kanji and Japanese words from OCR text.
  */
 
-import { lookupWord } from '../services/dictionary';
+import { lookupWord, lookupWordFlexible } from '../services/dictionary';
 
 // Unicode ranges for Japanese characters
 const KANJI_RANGE_START = 0x4e00;
@@ -70,6 +70,61 @@ export interface ExtractionWithCountsResult extends ExtractionResult {
   kanjiCounts: Record<string, number>;
   wordCounts: Record<string, number>;
 }
+
+function extractJapaneseRuns(s: string): string[] {
+  const out: string[] = [];
+  let buf = '';
+  for (const ch of s) {
+    if (isJapanese(ch)) {
+      buf += ch;
+    } else if (buf) {
+      out.push(buf);
+      buf = '';
+    }
+  }
+  if (buf) out.push(buf);
+  return out;
+}
+
+function hasAnyKanji(s: string): boolean {
+  for (const ch of s) {
+    if (isKanji(ch)) return true;
+  }
+  return false;
+}
+
+function isAllKana(s: string): boolean {
+  if (!s) return false;
+  for (const ch of s) {
+    if (!isHiragana(ch) && !isKatakana(ch)) return false;
+  }
+  return true;
+}
+
+/**
+ * Blocklist of common grammatical words that happen to have dictionary entries
+ * but are almost never the intended meaning when OCR splits them out.
+ * These are typically auxiliary verbs, copulas, or inflection endings.
+ */
+const GRAMMATICAL_KANA_BLOCKLIST = new Set([
+  // Auxiliary/copula
+  'ます', 'です', 'だ', 'た', 'て', 'で',
+  // Negative/desiderative/potential endings
+  'ない', 'たい', 'れる', 'られる', 'せる', 'させる',
+  // する conjugations that appear as tails
+  'する', 'した', 'して', 'しない', 'したい', 'される', 'させ',
+  // Common auxiliary endings
+  'ある', 'いる', 'おる', 'ける', 'くる', 'こい',
+  // て-form + auxiliary patterns (Google often splits these)
+  'てる', 'ている', 'てた', 'ていた', 'てない', 'ていない',
+  'てく', 'ていく', 'てくる', 'てきた',
+  'ておく', 'ておいた', 'てある', 'てあった',
+  'てみる', 'てみた', 'てしまう', 'てしまった', 'ちゃう', 'ちゃった',
+  // Particles that might slip through
+  'から', 'まで', 'より', 'ので', 'のに', 'けど', 'けれど',
+  // Very short fragments
+  'こ', 'そ', 'あ', 'ど', 'も', 'を', 'は', 'が', 'に', 'へ', 'と', 'の', 'で', 'や',
+]);
 
 function stripTrailingParticles(word: string): string {
   // Strip common particles/connectors at the very end, but keep okurigana (e.g. "見直す" should stay).
@@ -200,10 +255,6 @@ export function extractKanjiAndWordsWithCounts(text: string): ExtractionWithCoun
   };
 }
 
-function isAllKanji(word: string): boolean {
-  return !!word && /^[\u4e00-\u9faf]+$/.test(word);
-}
-
 function escapeForRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -275,13 +326,13 @@ async function splitIntoKnownWordsKanjiOnly(
  * - The DP splitter is safe for mixed tokens too (e.g. "...合せ"), despite the helper name.
  * - Unknown tokens are NOT kept (they must not be persisted as "words").
  */
-export async function extractKanjiAndWordsWithCountsSmart(text: string): Promise<ExtractionWithCountsResult> {
+export async function extractKanjiAndWordsWithCountsSmart(text: string, ocrWords?: string[]): Promise<ExtractionWithCountsResult> {
   const normalizedText = normalizeJapaneseSpacing(text);
   const base = extractKanjiAndWords(normalizedText);
 
-  // Cache dictionary lookups within this run.
+  // Cache dictionary lookups within this run (exact headword lookups; safe for substring DP).
   const knownCache = new Map<string, boolean>();
-  const isKnown = async (w: string): Promise<boolean> => {
+  const isKnownExact = async (w: string): Promise<boolean> => {
     if (!w) return false;
     const cached = knownCache.get(w);
     if (cached !== undefined) return cached;
@@ -291,19 +342,62 @@ export async function extractKanjiAndWordsWithCountsSmart(text: string): Promise
     return ok;
   };
 
+  const candidates: string[] = [];
+  if (ocrWords && ocrWords.length) {
+    for (const raw of ocrWords) {
+      if (!raw) continue;
+      const runs = extractJapaneseRuns(raw);
+      for (const r of runs) {
+        const normalized = normalizeExtractedWord(r);
+        if (normalized) candidates.push(normalized);
+      }
+    }
+    // Also include regex-extracted compounds from full text to catch words Google split incorrectly
+    // (e.g., "観覧車" split into "観覧" + "車" by OCR — the regex will find the full compound).
+    for (const w of base.words) {
+      if (w && !candidates.includes(w)) candidates.push(w);
+    }
+  } else {
+    candidates.push(...base.words);
+  }
+
   const finalWordsSet = new Set<string>();
-  for (const w of base.words) {
+  for (const w of candidates) {
     if (!w) continue;
 
-    if (await isKnown(w)) {
+    // Skip single-character words (single kanji tracked separately; single kana not useful).
+    if (w.length < 2) continue;
+
+    // --- All-kana tokens (no kanji) ---
+    // These are standalone OCR words; keep only if exact dictionary match AND not in blocklist.
+    if (isAllKana(w)) {
+      if (GRAMMATICAL_KANA_BLOCKLIST.has(w)) continue;
+      if (await isKnownExact(w)) {
+        finalWordsSet.add(w);
+      }
+      continue;
+    }
+
+    // --- Tokens containing kanji ---
+    // 1. Try EXACT lookup first (preserves conjugated forms like "救われない" if in dictionary).
+    if (await isKnownExact(w)) {
       finalWordsSet.add(w);
       continue;
     }
 
-    // Try to split into known dictionary words (minimum 2 chars each, to avoid 1-char fragments).
-    const split = await splitIntoKnownWordsKanjiOnly(w, isKnown, 2);
+    // 2. Try flexible lookup (strips trailing kana/particles to find headword).
+    const flex = await lookupWordFlexible(w);
+    if (flex && flex.word.length >= 2 && hasAnyKanji(flex.word)) {
+      finalWordsSet.add(flex.word);
+      continue;
+    }
+
+    // 3. Try to split into known dictionary words (minimum 2 chars each).
+    const split = await splitIntoKnownWordsKanjiOnly(w, isKnownExact, 2);
     if (split) {
-      for (const part of split) finalWordsSet.add(part);
+      for (const part of split) {
+        if (part.length >= 2) finalWordsSet.add(part);
+      }
       continue;
     }
     // Unknown and unsplittable: drop.

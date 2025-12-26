@@ -10,9 +10,11 @@ interface ListItemRowProps {
   gloss: string;
   onPress: () => void;
   onHide: () => Promise<void>;
+  hideAlertTitle?: string;
+  hideAlertAction?: string;
 }
 
-export function ListItemRow({ item, index, gloss, onPress, onHide }: ListItemRowProps) {
+export function ListItemRow({ item, index, gloss, onPress, onHide, hideAlertTitle, hideAlertAction }: ListItemRowProps) {
   const warn = item.encounter_count > 0 && item.practice_count === 0;
 
   const practicePct = item.encounter_count > 0 ? (item.practice_count / item.encounter_count) * 100 : null;
@@ -29,10 +31,12 @@ export function ListItemRow({ item, index, gloss, onPress, onHide }: ListItemRow
   const edgeStyle = edgeColor ? ({ borderLeftWidth: 4, borderLeftColor: edgeColor } as const) : null;
 
   const handleLongPress = () => {
-    Alert.alert('Hide item', `Hide ${item.display}?`, [
+    const title = hideAlertTitle ?? 'Hide item';
+    const action = hideAlertAction ?? 'Hide';
+    Alert.alert(title, `${action} ${item.display}?`, [
       { text: 'Cancel', style: 'cancel' },
       {
-        text: 'Hide',
+        text: action,
         style: 'destructive',
         onPress: onHide,
       },

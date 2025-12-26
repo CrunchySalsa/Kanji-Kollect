@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, Animated, Dimensions } from 'react-native';
-import { styles } from '../styles/theme';
+import { styles, colors } from '../styles/theme';
 import { useAppContext } from '../context/AppContext';
 import { useSpeech } from '../hooks';
 import { PhotoThumbnail, EmptyState, SegmentedToggle } from '../components';
@@ -20,6 +20,8 @@ export function DetailScreen() {
     openFullImage,
     onDeletePhoto,
     setWordKanjiModal,
+    toggleFavorite,
+    isFavorite,
   } = useAppContext();
 
   const { speakJa } = useSpeech();
@@ -158,7 +160,7 @@ export function DetailScreen() {
           </View>
         )}
 
-        <View style={{ flexDirection: 'row', marginTop: 12 }}>
+        <View style={{ flexDirection: 'row', marginTop: 12, alignItems: 'center', justifyContent: 'space-between' }}>
           <SegmentedToggle
             options={[
               { key: 'encounter', label: 'Encounters' },
@@ -167,10 +169,32 @@ export function DetailScreen() {
             value={photoType}
             onChange={setPhotoType}
           />
+          <TouchableOpacity
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 20,
+              backgroundColor: colors.surfaceDark,
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginLeft: 12,
+            }}
+            onPress={() => {
+              if (detail) {
+                toggleFavorite(detail.type, detail.id, detail.wordAliases);
+              }
+            }}
+            activeOpacity={0.8}
+            accessibilityLabel={detail && isFavorite(detail.type, detail.id) ? 'Remove from favorites' : 'Add to favorites'}
+          >
+            <Text style={{ fontSize: 20, color: detail && isFavorite(detail.type, detail.id) ? '#e94560' : colors.text }}>
+              {detail && isFavorite(detail.type, detail.id) ? '♥' : '♡'}
+            </Text>
+          </TouchableOpacity>
         </View>
       </View>
     );
-  }, [detail, detailKanjiInfo, detailWordInfo, detailWordsSpotted, metaCache, openDetail, photoType, setWordKanjiModal, speakJa, uniqueReadings]);
+  }, [detail, detailKanjiInfo, detailWordInfo, detailWordsSpotted, metaCache, openDetail, photoType, setWordKanjiModal, speakJa, uniqueReadings, toggleFavorite, isFavorite]);
 
   if (!detail) {
     return <EmptyState message="No detail selected." />;

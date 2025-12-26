@@ -7,7 +7,7 @@ export type FilterType = 'kanji' | 'word';
 export type GalleryType = 'encounter' | 'practice';
 export type PhotoType = 'encounter' | 'practice';
 
-export type Screen = 'list' | 'gallery' | 'detail' | 'settings';
+export type Screen = 'list' | 'gallery' | 'detail' | 'settings' | 'favorites';
 
 export type ListItem =
   | { type: 'kanji'; key: string; display: string; encounter_count: number; practice_count: number }
@@ -59,4 +59,5 @@ export interface FullImageMeta {
 }
 
 export { PhotoEntry, KanjiEntry, WordEntry };
+export type { FavoriteItem } from '../../utils/favorites';
 

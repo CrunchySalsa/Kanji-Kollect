@@ -16,6 +16,7 @@ import { ListScreen } from './ListScreen';
 import { DetailScreen } from './DetailScreen';
 import { GalleryScreen } from './GalleryScreen';
 import { SettingsScreen } from './SettingsScreen';
+import { FavoritesScreen } from './FavoritesScreen';
 import { Screen } from '../types';
 
 interface MainScreenProps {
@@ -59,6 +60,8 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
     metaCache,
     openDetail,
     openGallery,
+    openFavorites,
+    favorites,
     openEditForPhoto,
     saveEditForPhoto,
     applyEditsForPhoto,
@@ -191,6 +194,8 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
         currentScreen={screen}
         onNavigateToList={handleNavigateToList}
         onNavigateToGallery={openGallery}
+        onNavigateToFavorites={openFavorites}
+        hasFavorites={favorites.length > 0}
       />
 
       <Modal
@@ -247,6 +252,7 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
       {screen === 'detail' && <DetailScreen />}
       {screen === 'gallery' && <GalleryScreen />}
       {screen === 'settings' && <SettingsScreen />}
+      {screen === 'favorites' && <FavoritesScreen />}
 
       <WordKanjiModal
         state={wordKanjiModal}

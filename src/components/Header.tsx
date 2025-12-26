@@ -8,9 +8,11 @@ interface HeaderProps {
   currentScreen: Screen;
   onNavigateToList: () => void;
   onNavigateToGallery: () => void;
+  onNavigateToFavorites: () => void;
+  hasFavorites: boolean;
 }
 
-export function Header({ currentScreen, onNavigateToList, onNavigateToGallery }: HeaderProps) {
+export function Header({ currentScreen, onNavigateToList, onNavigateToGallery, onNavigateToFavorites, hasFavorites }: HeaderProps) {
   const navigation = useNavigation();
 
   return (
@@ -35,6 +37,13 @@ export function Header({ currentScreen, onNavigateToList, onNavigateToGallery }:
       </View>
       <Text style={styles.headerTitle}>Kanji Kollect</Text>
       <View style={styles.headerButtons}>
+        {currentScreen !== 'favorites' && (
+          <TouchableOpacity style={styles.headerBtn} onPress={onNavigateToFavorites} accessibilityLabel="Favorites">
+            <Text style={[styles.headerBtnText, hasFavorites && { color: '#e94560' }]}>
+              {hasFavorites ? '♥' : '♡'}
+            </Text>
+          </TouchableOpacity>
+        )}
         {currentScreen !== 'gallery' && (
           <TouchableOpacity style={styles.headerBtn} onPress={onNavigateToGallery}>
             <Text style={styles.headerBtnText}>Gallery</Text>

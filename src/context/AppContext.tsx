@@ -59,6 +59,7 @@ import { getPreference, setPreference, removePreference } from '../../utils/pref
 import { lookupKanjiNormalized, lookupWordFlexible, lookupKanjiBatch, lookupWordBatch } from '../../services/dictionary';
 import { ensureDictionarySqliteStarted } from '../../services/dictionarySqlite';
 import { useUiBusy } from '../hooks';
+import { getFavorites, toggleFavorite as toggleFavoriteStorage, FavoriteItem } from '../../utils/favorites';
 
 interface NavHistoryEntry {
   screen: Screen;
@@ -191,6 +192,14 @@ interface AppContextType {
   hiddenWordGroups: { display: string; aliases: string[] }[];
   loadHiddenItems: () => Promise<void>;
 
+  // Favorites
+  favorites: FavoriteItem[];
+  favoritesSet: Set<string>;
+  loadFavorites: () => Promise<void>;
+  toggleFavorite: (type: 'kanji' | 'word', id: string, wordAliases?: string[]) => Promise<void>;
+  isFavorite: (type: 'kanji' | 'word', id: string) => boolean;
+  openFavorites: () => Promise<void>;
+
   // Actions
   openFullImage: (photo: PhotoEntry, opts?: { photos?: PhotoEntry[]; startIndex?: number }) => Promise<void>;
   openEditForPhoto: (photo: PhotoEntry) => Promise<void>;
@@ -317,6 +326,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const [hiddenKanjiItems, setHiddenKanjiItems] = useState<KanjiEntry[]>([]);
   const [hiddenWordGroups, setHiddenWordGroups] = useState<{ display: string; aliases: string[] }[]>([]);
+
+  const [favorites, setFavorites] = useState<FavoriteItem[]>([]);
+  const [favoritesSet, setFavoritesSet] = useState<Set<string>>(new Set());
 
   const { uiBusy, uiBusyLabel, runWithUiBusy } = useUiBusy();
 
@@ -573,6 +585,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       loadHiddenItems().catch((e) => console.error(e));
     }
   }, [loadHiddenItems, screen]);
+
+  const loadFavorites = useCallback(async () => {
+    const favs = await getFavorites();
+    setFavorites(favs);
+    setFavoritesSet(new Set(favs.map((f) => `${f.type}:${f.id}`)));
+  }, []);
+
+  // Load favorites on mount
+  useEffect(() => {
+    loadFavorites().catch((e) => console.error(e));
+  }, [loadFavorites]);
+
+  const toggleFavoriteItem = useCallback(async (type: 'kanji' | 'word', id: string, wordAliases?: string[]) => {
+    const item: FavoriteItem = { type, id, wordAliases };
+    await toggleFavoriteStorage(item);
+    await loadFavorites();
+  }, [loadFavorites]);
+
+  const isFavoriteCheck = useCallback((type: 'kanji' | 'word', id: string): boolean => {
+    return favoritesSet.has(`${type}:${id}`);
+  }, [favoritesSet]);
+
+  const openFavorites = useCallback(async () => {
+    await runWithUiBusy('Loading favorites…', async () => {
+      navHistoryRef.current.push(captureNavEntry());
+      await loadFavorites();
+      setScreen('favorites');
+    });
+  }, [captureNavEntry, loadFavorites, runWithUiBusy]);
 
   const reloadList = useCallback(async () => {
     const isInitial = itemsRef.current.length === 0;
@@ -1848,6 +1889,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     hiddenKanjiItems,
     hiddenWordGroups,
     loadHiddenItems,
+    favorites,
+    favoritesSet,
+    loadFavorites,
+    toggleFavorite: toggleFavoriteItem,
+    isFavorite: isFavoriteCheck,
+    openFavorites,
     openFullImage,
     openEditForPhoto,
     saveEditForPhoto,

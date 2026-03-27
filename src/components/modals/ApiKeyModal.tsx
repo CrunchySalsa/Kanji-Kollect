@@ -6,9 +6,10 @@ import { colors, radii, spacing, typography } from '../../styles/theme';
 interface ApiKeyModalProps {
   visible: boolean;
   onSubmit: (apiKey: string) => void;
+  onSkip: () => void;
 }
 
-export function ApiKeyModal({ visible, onSubmit }: ApiKeyModalProps) {
+export function ApiKeyModal({ visible, onSubmit, onSkip }: ApiKeyModalProps) {
   const insets = useSafeAreaInsets();
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
@@ -26,7 +27,7 @@ export function ApiKeyModal({ visible, onSubmit }: ApiKeyModalProps) {
         <View style={[modalStyles.card, { marginTop: insets.top + 40 }]}>
           <Text style={modalStyles.title}>Welcome to Kanji Kollect</Text>
           <Text style={modalStyles.subtitle}>
-            This app uses Google Cloud Vision for OCR. Please enter your API key to get started.
+            A Google Cloud Vision API key is needed for OCR. Please enter your key here to get started, or add one later in the Settings menu.
           </Text>
 
           <View style={modalStyles.inputRow}>
@@ -63,7 +64,10 @@ export function ApiKeyModal({ visible, onSubmit }: ApiKeyModalProps) {
             activeOpacity={0.8}
             disabled={!apiKey.trim()}
           >
-            <Text style={modalStyles.submitText}>Continue</Text>
+            <Text style={modalStyles.submitText}>Save API Key</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onSkip} style={modalStyles.skipBtn} activeOpacity={0.8}>
+            <Text style={modalStyles.skipText}>Do it Later</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -146,6 +150,16 @@ const modalStyles = StyleSheet.create({
     color: colors.dark,
     fontWeight: '800',
     fontSize: typography.large,
+  },
+  skipBtn: {
+    marginTop: spacing.md,
+    alignItems: 'center',
+    paddingVertical: spacing.xs,
+  },
+  skipText: {
+    color: colors.textMuted,
+    fontSize: typography.body,
+    fontWeight: '700',
   },
 });
 

@@ -65,7 +65,7 @@ export function SettingsScreen() {
   const handleRestoreBackup = async () => {
     Alert.alert(
       'Restore backup',
-      'This will replace your current local data (except your API key). Continue?',
+      'This will replace your current local data. Continue?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -162,7 +162,7 @@ export function SettingsScreen() {
       <View style={styles.settingsSection}>
         <Text style={styles.settingsSectionTitle}>Backup and restore</Text>
         <Text style={[styles.mutedSmall, { marginBottom: spacing.sm }]}>
-          Exports your full local database and images into a backup folder in user-selected storage. API key is not included.
+          Exports your full local database and images into a backup folder in user storage.
         </Text>
         <TouchableOpacity
           onPress={handleExportBackup}

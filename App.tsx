@@ -1,5 +1,5 @@
 import 'react-native-gesture-handler';
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
@@ -36,12 +36,17 @@ function CustomDrawerContent(props: any) {
 function AppInner() {
   const setScreenRef = useRef<((s: Screen) => void) | null>(null);
   const { apiKey, apiKeyLoading, setApiKey } = useAppContext();
+  const [dismissedApiKeyPrompt, setDismissedApiKeyPrompt] = useState(false);
 
-  const showApiKeyModal = !apiKeyLoading && !apiKey;
+  const showApiKeyModal = !apiKeyLoading && !apiKey && !dismissedApiKeyPrompt;
 
   return (
     <>
-      <ApiKeyModal visible={showApiKeyModal} onSubmit={setApiKey} />
+      <ApiKeyModal
+        visible={showApiKeyModal}
+        onSubmit={setApiKey}
+        onSkip={() => setDismissedApiKeyPrompt(true)}
+      />
       <Drawer.Navigator
       screenOptions={{
         headerShown: false,

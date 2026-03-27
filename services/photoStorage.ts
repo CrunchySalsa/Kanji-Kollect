@@ -5,7 +5,10 @@ import {
   copyAsync,
   deleteAsync,
   readDirectoryAsync,
+  writeAsStringAsync,
+  EncodingType,
 } from 'expo-file-system/legacy';
+import { File } from 'expo-file-system';
 
 const PHOTOS_DIRECTORY = `${documentDirectory}photos/`;
 
@@ -99,4 +102,42 @@ export async function clearAllPhotos(): Promise<void> {
   } catch (error) {
     console.error('Error clearing photos:', error);
   }
+}
+
+/**
+ * Restore a photo file from base64 backup content.
+ */
+export async function restorePhotoFromBase64(filename: string, base64: string): Promise<string> {
+  await ensurePhotosDirectory();
+  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const destinationUri = `${PHOTOS_DIRECTORY}${safeName}`;
+  await writeAsStringAsync(destinationUri, base64, { encoding: EncodingType.Base64 });
+  return destinationUri;
+}
+
+/**
+ * Restore a photo file from raw bytes backup content.
+ */
+export async function restorePhotoFromBytes(filename: string, bytes: Uint8Array): Promise<string> {
+  await ensurePhotosDirectory();
+  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const destinationUri = `${PHOTOS_DIRECTORY}${safeName}`;
+  const file = new File(destinationUri);
+  file.create({ overwrite: true, intermediates: true });
+  file.write(bytes);
+  return destinationUri;
+}
+
+/**
+ * Restore a photo file by copying from another file URI.
+ */
+export async function restorePhotoFromFile(filename: string, sourceUri: string): Promise<string> {
+  await ensurePhotosDirectory();
+  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const destinationUri = `${PHOTOS_DIRECTORY}${safeName}`;
+  await copyAsync({
+    from: sourceUri,
+    to: destinationUri,
+  });
+  return destinationUri;
 }

@@ -624,3 +624,89 @@ export async function backfillWordDisplayBatch(batchSize: number = 200): Promise
 
   return updates.length;
 }
+
+export interface DatabaseSnapshot {
+  photos: PhotoEntry[];
+  kanji: Array<KanjiEntry & { hidden: number | null }>;
+  words: Array<WordEntry & { hidden: number | null; display: string | null }>;
+  photo_kanji: Array<{ photo_id: number; kanji_char: string; occurrences: number }>;
+  photo_word: Array<{ photo_id: number; word: string; occurrences: number }>;
+}
+
+export async function exportDatabaseSnapshot(): Promise<DatabaseSnapshot> {
+  const database = await ensureInitialized();
+  const [photos, kanji, words, photoKanji, photoWord] = await Promise.all([
+    database.getAllAsync<PhotoEntry>('SELECT id, type, uri, created_at, ocr_complete FROM photos ORDER BY id ASC'),
+    database.getAllAsync<KanjiEntry & { hidden: number | null }>(
+      'SELECT character, encounter_count, practice_count, hidden FROM kanji ORDER BY character ASC'
+    ),
+    database.getAllAsync<WordEntry & { hidden: number | null; display: string | null }>(
+      'SELECT word, encounter_count, practice_count, hidden, display FROM words ORDER BY word ASC'
+    ),
+    database.getAllAsync<{ photo_id: number; kanji_char: string; occurrences: number }>(
+      'SELECT photo_id, kanji_char, occurrences FROM photo_kanji ORDER BY photo_id ASC, kanji_char ASC'
+    ),
+    database.getAllAsync<{ photo_id: number; word: string; occurrences: number }>(
+      'SELECT photo_id, word, occurrences FROM photo_word ORDER BY photo_id ASC, word ASC'
+    ),
+  ]);
+
+  return {
+    photos,
+    kanji,
+    words,
+    photo_kanji: photoKanji,
+    photo_word: photoWord,
+  };
+}
+
+export async function importDatabaseSnapshot(snapshot: DatabaseSnapshot): Promise<void> {
+  const database = await ensureInitialized();
+
+  await database.withTransactionAsync(async () => {
+    await database.execAsync('PRAGMA foreign_keys = OFF;');
+
+    await database.runAsync('DELETE FROM photo_kanji');
+    await database.runAsync('DELETE FROM photo_word');
+    await database.runAsync('DELETE FROM photos');
+    await database.runAsync('DELETE FROM kanji');
+    await database.runAsync('DELETE FROM words');
+
+    for (const row of snapshot.photos) {
+      await database.runAsync(
+        'INSERT INTO photos (id, type, uri, created_at, ocr_complete) VALUES (?, ?, ?, ?, ?)',
+        [row.id, row.type, row.uri, row.created_at, row.ocr_complete]
+      );
+    }
+
+    for (const row of snapshot.kanji) {
+      await database.runAsync(
+        'INSERT INTO kanji (character, encounter_count, practice_count, hidden) VALUES (?, ?, ?, ?)',
+        [row.character, row.encounter_count, row.practice_count, row.hidden ?? 0]
+      );
+    }
+
+    for (const row of snapshot.words) {
+      await database.runAsync(
+        'INSERT INTO words (word, display, encounter_count, practice_count, hidden) VALUES (?, ?, ?, ?, ?)',
+        [row.word, row.display, row.encounter_count, row.practice_count, row.hidden ?? 0]
+      );
+    }
+
+    for (const row of snapshot.photo_kanji) {
+      await database.runAsync(
+        'INSERT INTO photo_kanji (photo_id, kanji_char, occurrences) VALUES (?, ?, ?)',
+        [row.photo_id, row.kanji_char, row.occurrences]
+      );
+    }
+
+    for (const row of snapshot.photo_word) {
+      await database.runAsync(
+        'INSERT INTO photo_word (photo_id, word, occurrences) VALUES (?, ?, ?)',
+        [row.photo_id, row.word, row.occurrences]
+      );
+    }
+
+    await database.execAsync('PRAGMA foreign_keys = ON;');
+  });
+}

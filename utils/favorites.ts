@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const FAVORITES_KEY = '@nihongo_tracker:favorites';
+const FAVORITES_KEY = '@kanji_kollect:favorites';
 
 export interface FavoriteItem {
   type: 'kanji' | 'word';

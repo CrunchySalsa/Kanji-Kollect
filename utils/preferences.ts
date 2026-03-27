@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const PREFERENCE_PREFIX = '@nihongo_tracker:';
+const PREFERENCE_PREFIX = '@kanji_kollect:';
 
 /**
  * Get a preference value from AsyncStorage.

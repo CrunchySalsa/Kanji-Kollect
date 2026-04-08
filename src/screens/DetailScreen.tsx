@@ -11,6 +11,7 @@ import { generateExampleSentence, ExampleSentenceError, ExampleSentenceResult } 
 import { generateMnemonic, MnemonicError, MnemonicResult } from '../../services/mnemonic';
 import { tokenizeSentenceWords, WordInfo } from '../../services/dictionary';
 import { toRomaji } from 'wanakana';
+import * as Clipboard from 'expo-clipboard';
 
 export function DetailScreen() {
   const {
@@ -414,6 +415,9 @@ export function DetailScreen() {
         {detail.type === 'word' ? (
           (() => {
             const hasKanji = /[\u4e00-\u9faf]/.test(detail.id);
+            const copyTitle = () => {
+              Clipboard.setStringAsync(detail.id).catch(() => {});
+            };
             const titleContent = (
               <Text style={styles.detailTitle}>
                 {detail.id}
@@ -421,13 +425,24 @@ export function DetailScreen() {
               </Text>
             );
             return hasKanji ? (
-              <TouchableOpacity onPress={() => setWordKanjiModal((s) => ({ ...s, visible: true }))} activeOpacity={0.8}>
+              <TouchableOpacity onPress={() => setWordKanjiModal((s) => ({ ...s, visible: true }))} onLongPress={copyTitle} activeOpacity={0.8}>
                 {titleContent}
               </TouchableOpacity>
-            ) : titleContent;
+            ) : (
+              <TouchableOpacity onLongPress={copyTitle} activeOpacity={1}>
+                {titleContent}
+              </TouchableOpacity>
+            );
           })()
         ) : (
-          <Text style={styles.detailTitle}>{detail.id}</Text>
+          <TouchableOpacity
+            onLongPress={() => {
+              Clipboard.setStringAsync(detail.id).catch(() => {});
+            }}
+            activeOpacity={1}
+          >
+            <Text style={styles.detailTitle}>{detail.id}</Text>
+          </TouchableOpacity>
         )}
 
         {detail.type === 'kanji' && detailKanjiInfo && (

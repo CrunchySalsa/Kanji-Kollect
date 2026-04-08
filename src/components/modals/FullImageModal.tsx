@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, Modal, TouchableOpacity, ScrollView, ActivityIndicator, TextInput, Animated, TouchableWithoutFeedback, PanResponder } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ImageViewer from 'react-native-image-zoom-viewer';
+import { toRomaji } from 'wanakana';
 import { styles } from '../../styles/theme';
 import { PhotoEntry, FullImageMeta, MetaCacheEntry } from '../../types';
 import { SegmentedToggle } from '../SegmentedToggle';
@@ -160,8 +161,11 @@ export function FullImageModal({
 
   const wordRows = useMemo(() => {
     return displayWords.map((w) => {
-      const gloss = metaCache[`word:${w}`]?.meaning ?? '';
-      return { w, gloss };
+      const cached = metaCache[`word:${w}`];
+      const gloss = cached?.meaning ?? '';
+      const reading = cached?.reading?.trim() || '';
+      const romaji = reading ? toRomaji(reading).trim() : '';
+      return { w, gloss, romaji };
     });
   }, [displayWords, metaCache]);
 
@@ -462,7 +466,7 @@ export function FullImageModal({
                       >
                         {wordRows.length ? (
                           <View style={{ marginTop: 10 }}>
-                            {wordRows.map(({ w, gloss }, idx) => (
+                            {wordRows.map(({ w, gloss, romaji }, idx) => (
                               <TouchableOpacity
                                 key={`${w}-${idx}`}
                                 style={styles.spottedRow}
@@ -471,6 +475,7 @@ export function FullImageModal({
                               >
                                 <Text style={styles.spottedMain} numberOfLines={1} ellipsizeMode="tail">
                                   {w}
+                                  {romaji ? <Text style={styles.spottedGloss}> ({romaji})</Text> : null}
                                   {gloss ? <Text style={styles.spottedGloss}> — {gloss}</Text> : null}
                                 </Text>
                               </TouchableOpacity>

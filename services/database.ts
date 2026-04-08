@@ -10,6 +10,7 @@ export interface PhotoEntry {
   uri: string;
   created_at: number;
   ocr_complete: number;
+  ocr_text: string | null;
 }
 
 export interface KanjiEntry {
@@ -84,6 +85,12 @@ async function ensureInitialized(): Promise<SQLite.SQLiteDatabase> {
       CREATE INDEX IF NOT EXISTS idx_photos_type ON photos(type);
       `);
 
+      // Migration: add ocr_text column to photos.
+      const colsPhotos = await database.getAllAsync<{ name: string }>('PRAGMA table_info(photos)');
+      if (!colsPhotos.some((c) => c.name === 'ocr_text')) {
+        await database.runAsync('ALTER TABLE photos ADD COLUMN ocr_text TEXT');
+      }
+
       // Migration: add persistent hidden flags for kanji/words.
       const ensureHiddenColumn = async (table: 'kanji' | 'words') => {
         const cols = await database.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
@@ -118,11 +125,11 @@ export async function initDatabase(): Promise<void> {
 }
 
 // Photo operations
-export async function savePhoto(uri: string, type: 'encounter' | 'practice'): Promise<number> {
+export async function savePhoto(uri: string, type: 'encounter' | 'practice', ocrText?: string | null): Promise<number> {
   const database = await ensureInitialized();
   const result = await database.runAsync(
-    'INSERT INTO photos (uri, type, created_at, ocr_complete) VALUES (?, ?, ?, 1)',
-    [uri, type, Date.now()]
+    'INSERT INTO photos (uri, type, created_at, ocr_complete, ocr_text) VALUES (?, ?, ?, 1, ?)',
+    [uri, type, Date.now(), ocrText ?? null]
   );
   return result.lastInsertRowId;
 }
@@ -131,6 +138,11 @@ export async function updatePhotoUri(photoId: number, uri: string, updatedAt?: n
   const database = await ensureInitialized();
   const ts = typeof updatedAt === 'number' ? updatedAt : Date.now();
   await database.runAsync('UPDATE photos SET uri = ?, created_at = ?, ocr_complete = 1 WHERE id = ?', [uri, ts, photoId]);
+}
+
+export async function updatePhotoOcrText(photoId: number, ocrText: string | null): Promise<void> {
+  const database = await ensureInitialized();
+  await database.runAsync('UPDATE photos SET ocr_text = ? WHERE id = ?', [ocrText, photoId]);
 }
 
 export async function getAllPhotos(): Promise<PhotoEntry[]> {
@@ -246,7 +258,7 @@ export async function getPhotosForKanji(character: string): Promise<PhotoEntry[]
 export async function getKanjiForPhoto(photoId: number): Promise<string[]> {
   const database = await ensureInitialized();
   const rows = await database.getAllAsync<{ kanji_char: string }>(
-    'SELECT kanji_char FROM photo_kanji WHERE photo_id = ?',
+    'SELECT kanji_char FROM photo_kanji WHERE photo_id = ? ORDER BY rowid',
     [photoId]
   );
   return rows.map(r => r.kanji_char);
@@ -404,7 +416,7 @@ export async function getPhotosForWord(word: string): Promise<PhotoEntry[]> {
 export async function getWordsForPhoto(photoId: number): Promise<string[]> {
   const database = await ensureInitialized();
   const rows = await database.getAllAsync<{ word: string }>(
-    'SELECT word FROM photo_word WHERE photo_id = ?',
+    'SELECT word FROM photo_word WHERE photo_id = ? ORDER BY rowid',
     [photoId]
   );
   return rows.map(r => r.word);
@@ -636,7 +648,7 @@ export interface DatabaseSnapshot {
 export async function exportDatabaseSnapshot(): Promise<DatabaseSnapshot> {
   const database = await ensureInitialized();
   const [photos, kanji, words, photoKanji, photoWord] = await Promise.all([
-    database.getAllAsync<PhotoEntry>('SELECT id, type, uri, created_at, ocr_complete FROM photos ORDER BY id ASC'),
+    database.getAllAsync<PhotoEntry>('SELECT id, type, uri, created_at, ocr_complete, ocr_text FROM photos ORDER BY id ASC'),
     database.getAllAsync<KanjiEntry & { hidden: number | null }>(
       'SELECT character, encounter_count, practice_count, hidden FROM kanji ORDER BY character ASC'
     ),
@@ -674,8 +686,8 @@ export async function importDatabaseSnapshot(snapshot: DatabaseSnapshot): Promis
 
     for (const row of snapshot.photos) {
       await database.runAsync(
-        'INSERT INTO photos (id, type, uri, created_at, ocr_complete) VALUES (?, ?, ?, ?, ?)',
-        [row.id, row.type, row.uri, row.created_at, row.ocr_complete]
+        'INSERT INTO photos (id, type, uri, created_at, ocr_complete, ocr_text) VALUES (?, ?, ?, ?, ?, ?)',
+        [row.id, row.type, row.uri, row.created_at, row.ocr_complete, row.ocr_text ?? null]
       );
     }
 

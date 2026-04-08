@@ -8,9 +8,11 @@ import { exportBackupToUserStorage, restoreBackupFromPickedFile } from '../../se
 
 export function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const { hiddenKanjiItems, hiddenWordGroups, loadHiddenItems, reloadList, loadFavorites, apiKey, setApiKey } = useAppContext();
+  const { hiddenKanjiItems, hiddenWordGroups, loadHiddenItems, reloadList, loadFavorites, apiKey, setApiKey, geminiApiKey, setGeminiApiKey } = useAppContext();
   const [apiKeyInput, setApiKeyInput] = useState(apiKey ?? '');
+  const [geminiApiKeyInput, setGeminiApiKeyInput] = useState(geminiApiKey ?? '');
   const [showApiKey, setShowApiKey] = useState(false);
+  const [showGeminiApiKey, setShowGeminiApiKey] = useState(false);
   const [busyVisible, setBusyVisible] = useState(false);
   const [busyLabel, setBusyLabel] = useState('Working…');
 
@@ -18,9 +20,18 @@ export function SettingsScreen() {
     setApiKeyInput(apiKey ?? '');
   }, [apiKey]);
 
+  useEffect(() => {
+    setGeminiApiKeyInput(geminiApiKey ?? '');
+  }, [geminiApiKey]);
+
   const handleSaveApiKey = async () => {
     await setApiKey(apiKeyInput);
     Alert.alert('Saved', 'API key has been saved.');
+  };
+
+  const handleSaveGeminiApiKey = async () => {
+    await setGeminiApiKey(geminiApiKeyInput);
+    Alert.alert('Saved', 'Gemini API key has been saved.');
   };
 
   const handleUnhideKanji = async (character: string) => {
@@ -156,6 +167,63 @@ export function SettingsScreen() {
           activeOpacity={0.8}
         >
           <Text style={{ color: colors.dark, fontWeight: '800', fontSize: typography.medium }}>Save API Key</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={[styles.settingsSection, { marginBottom: spacing.md }]}>
+        <Text style={styles.settingsSectionTitle}>Gemini API Key</Text>
+        <Text style={[styles.mutedSmall, { marginBottom: spacing.sm }]}>
+          Optional. Used to generate example sentences on the detail screen.
+        </Text>
+        <View style={{ flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.sm }}>
+          <TextInput
+            style={{
+              flex: 1,
+              backgroundColor: colors.surfaceDark,
+              borderRadius: radii.lg,
+              paddingVertical: 10,
+              paddingHorizontal: spacing.md,
+              color: colors.text,
+              fontSize: typography.medium,
+              fontWeight: '600',
+            }}
+            value={geminiApiKeyInput}
+            onChangeText={setGeminiApiKeyInput}
+            placeholder="Paste your Gemini API key"
+            placeholderTextColor={colors.textDim}
+            secureTextEntry={!showGeminiApiKey}
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="off"
+            importantForAutofill="no"
+            textContentType="none"
+          />
+          <TouchableOpacity
+            onPress={() => setShowGeminiApiKey(!showGeminiApiKey)}
+            style={{
+              backgroundColor: colors.surfaceDark,
+              borderRadius: radii.lg,
+              paddingHorizontal: spacing.md,
+              justifyContent: 'center',
+            }}
+            activeOpacity={0.7}
+          >
+            <Text style={{ color: colors.textMuted, fontSize: typography.body, fontWeight: '700' }}>
+              {showGeminiApiKey ? 'Hide' : 'Show'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+        <TouchableOpacity
+          onPress={handleSaveGeminiApiKey}
+          style={{
+            backgroundColor: colors.info,
+            borderRadius: radii.lg,
+            paddingVertical: spacing.md,
+            alignItems: 'center',
+          }}
+          activeOpacity={0.8}
+        >
+          <Text style={{ color: colors.dark, fontWeight: '800', fontSize: typography.medium }}>Save Gemini API Key</Text>
         </TouchableOpacity>
       </View>
 

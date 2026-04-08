@@ -8,6 +8,7 @@ import { useSwipePager } from '../hooks';
 import { GalleryType } from '../types';
 import { getPreference, setPreference } from '../../utils/preferences';
 import { generateExampleSentence, ExampleSentenceError, ExampleSentenceResult } from '../../services/exampleSentence';
+import { generateMnemonic, MnemonicError, MnemonicResult } from '../../services/mnemonic';
 import { tokenizeSentenceWords, WordInfo } from '../../services/dictionary';
 import { toRomaji } from 'wanakana';
 
@@ -41,6 +42,8 @@ export function DetailScreen() {
   const [showGeminiKey, setShowGeminiKey] = useState(false);
   const [sentenceWordsModal, setSentenceWordsModal] = useState<{ visible: boolean; words: WordInfo[] }>({ visible: false, words: [] });
   const [sentenceWordsBusy, setSentenceWordsBusy] = useState(false);
+  const [mnemonic, setMnemonic] = useState<MnemonicResult | null>(null);
+  const [mnemonicBusy, setMnemonicBusy] = useState(false);
   const photosActiveIndex = photoType === 'encounter' ? 0 : 1;
 
   const normalizeExampleCacheValue = useCallback((v: any): ExampleSentenceResult | null => {
@@ -61,6 +64,7 @@ export function DetailScreen() {
   }, []);
 
   const exampleCacheKey = detail ? `${detail.type}:${detail.id}` : null;
+  const mnemonicCacheKey = detail ? `mnemonic:${detail.type}:${detail.id}` : null;
 
   useEffect(() => {
     setGeminiInput(geminiApiKey ?? '');
@@ -91,6 +95,88 @@ export function DetailScreen() {
       cancelled = true;
     };
   }, [exampleCacheKey, normalizeExampleCacheValue]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!mnemonicCacheKey) {
+      setMnemonic(null);
+      return;
+    }
+    (async () => {
+      const raw = await getPreference('mnemonicCache');
+      if (!raw) {
+        if (!cancelled) setMnemonic(null);
+        return;
+      }
+      try {
+        const cache = JSON.parse(raw) as Record<string, MnemonicResult>;
+        const val = cache[mnemonicCacheKey];
+        if (!cancelled) setMnemonic(val && typeof val.content === 'string' && val.content.trim() ? val : null);
+      } catch {
+        if (!cancelled) setMnemonic(null);
+      }
+    })().catch(() => {
+      if (!cancelled) setMnemonic(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [mnemonicCacheKey]);
+
+  const persistMnemonicForCurrentItem = useCallback(
+    async (result: MnemonicResult) => {
+      if (!mnemonicCacheKey) return;
+      const raw = await getPreference('mnemonicCache');
+      let cache: Record<string, MnemonicResult> = {};
+      if (raw) {
+        try {
+          cache = JSON.parse(raw) as Record<string, MnemonicResult>;
+        } catch {
+          cache = {};
+        }
+      }
+      cache[mnemonicCacheKey] = result;
+      await setPreference('mnemonicCache', JSON.stringify(cache));
+      setMnemonic(result);
+    },
+    [mnemonicCacheKey]
+  );
+
+  const createMnemonic = useCallback(
+    async (keyOverride?: string) => {
+      if (!detail) return;
+      const activeKey = keyOverride?.trim() || geminiApiKey || '';
+      if (!activeKey) {
+        setGeminiPromptVisible(true);
+        return;
+      }
+
+      setMnemonicBusy(true);
+      try {
+        const result = await generateMnemonic(activeKey, {
+          type: detail.type,
+          text: detail.id,
+          reading: detail.type === 'word' ? detailWordInfo?.reading ?? null : null,
+          meaning: detail.type === 'word' ? detailWordInfo?.meaning?.join(', ') ?? null : detailKanjiInfo?.meanings?.join(', ') ?? null,
+        });
+        await persistMnemonicForCurrentItem(result);
+      } catch (error) {
+        const message = error instanceof MnemonicError ? error.message : 'Failed to generate a mnemonic.';
+        Alert.alert('Error', message);
+      } finally {
+        setMnemonicBusy(false);
+      }
+    },
+    [detail, detailKanjiInfo?.meanings, detailWordInfo?.meaning, detailWordInfo?.reading, geminiApiKey, persistMnemonicForCurrentItem]
+  );
+
+  const onPressCreateMnemonic = useCallback(() => {
+    if (!geminiApiKey) {
+      setGeminiPromptVisible(true);
+      return;
+    }
+    createMnemonic().catch(() => {});
+  }, [createMnemonic, geminiApiKey]);
 
   const persistExampleForCurrentItem = useCallback(
     async (result: ExampleSentenceResult) => {
@@ -428,6 +514,130 @@ export function DetailScreen() {
           </TouchableOpacity>
         </View>
 
+        <View style={styles.detailInfoCard}>
+          {mnemonic ? (
+            <View style={{ gap: 6 }}>
+              {(() => {
+                const raw = mnemonic.content;
+                const mnemonicMatch = raw.match(/\[MNEMONIC\]([\s\S]*?)\[\/MNEMONIC\]/);
+                const radicalsMatch = raw.match(/\[RADICALS\]([\s\S]*?)\[\/RADICALS\]/);
+
+                let body = raw;
+                if (mnemonicMatch) body = body.replace(mnemonicMatch[0], '');
+                if (radicalsMatch) body = body.replace(radicalsMatch[0], '');
+
+                const bodyLines = body.split('\n').map((l) => l.trim()).filter(Boolean);
+
+                const radicalLines = radicalsMatch
+                  ? radicalsMatch[1].split('\n').map((l) => l.trim().replace(/^-\s*/, '')).filter(Boolean)
+                  : [];
+
+                const mnemonicText = mnemonicMatch
+                  ? mnemonicMatch[1].trim()
+                  : bodyLines.join('\n');
+
+                const displayBodyLines = mnemonicMatch ? bodyLines : [];
+
+                const linkifyKanji = (text: string, baseStyle: any, keyPrefix: string) => {
+                  const cleaned = text.replace(/\*+/g, '').replace(/_([^_]+)_/g, '$1');
+                  const tokenPattern = /(\[B\][\s\S]*?\[\/B\])|([\u3400-\u4DBF\u4E00-\u9FFF\u3005]+)/g;
+                  const nodes: React.ReactNode[] = [];
+                  let last = 0;
+                  let ki = 0;
+                  tokenPattern.lastIndex = 0;
+                  let m: RegExpExecArray | null;
+                  while ((m = tokenPattern.exec(cleaned)) !== null) {
+                    if (m.index > last) {
+                      nodes.push(<Text key={`${keyPrefix}-t${ki++}`}>{cleaned.slice(last, m.index)}</Text>);
+                    }
+                    if (m[1]) {
+                      nodes.push(
+                        <Text key={`${keyPrefix}-b${ki++}`} style={{ fontWeight: '800' }}>
+                          {m[1].slice(3, -4)}
+                        </Text>
+                      );
+                    } else {
+                      const kw = m[2];
+                      const type = kw.length === 1 ? 'kanji' : 'word';
+                      nodes.push(
+                        <Text
+                          key={`${keyPrefix}-k${ki++}`}
+                          style={{ color: colors.info }}
+                          onPress={() => { openDetail(type as 'kanji' | 'word', kw).catch(() => {}); }}
+                        >
+                          {kw}
+                        </Text>
+                      );
+                    }
+                    last = m.index + m[0].length;
+                  }
+                  if (last < cleaned.length) {
+                    nodes.push(<Text key={`${keyPrefix}-t${ki++}`}>{cleaned.slice(last)}</Text>);
+                  }
+                  return <Text style={baseStyle}>{nodes}</Text>;
+                };
+
+                return (
+                  <>
+                    {radicalLines.length > 0 && (
+                      <View>
+                        <Text style={styles.detailInfoLabel}>{detail.type === 'kanji' ? 'Radicals' : 'Kanji'}</Text>
+                        {radicalLines.map((line, idx) => (
+                          <View key={`radical-${idx}`} style={{ flexDirection: 'row', marginTop: 4 }}>
+                            <Text style={[styles.detailInfoValue, { marginRight: 8 }]}>-</Text>
+                            <View style={{ flex: 1 }}>
+                              {linkifyKanji(line, [styles.detailInfoValue, { lineHeight: 20 }], `rad-${idx}`)}
+                            </View>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                    <Text style={styles.detailInfoLabel}>Mnemonic</Text>
+                    {displayBodyLines.map((line, idx) => (
+                      <View key={`mnem-body-${idx}`}>
+                        {linkifyKanji(line, [styles.detailInfoValue, { lineHeight: 20 }], `mbody-${idx}`)}
+                      </View>
+                    ))}
+                    {mnemonicText ? (
+                      <View style={{
+                        marginTop: 8,
+                        backgroundColor: colors.surface,
+                        borderRadius: 10,
+                        padding: 12,
+                        borderLeftWidth: 3,
+                        borderLeftColor: colors.info,
+                      }}>
+                        {linkifyKanji(mnemonicText, [styles.detailInfoValue, { lineHeight: 22, fontStyle: 'italic' }], 'mnem-snip')}
+                      </View>
+                    ) : null}
+                  </>
+                );
+              })()}
+            </View>
+          ) : null}
+          <TouchableOpacity
+            onPress={onPressCreateMnemonic}
+            style={{
+              backgroundColor: colors.info,
+              borderRadius: 10,
+              paddingVertical: 10,
+              alignItems: 'center',
+              marginTop: mnemonic ? 8 : 0,
+              opacity: mnemonicBusy ? 0.7 : 1,
+            }}
+            activeOpacity={0.8}
+            disabled={mnemonicBusy}
+          >
+            {mnemonicBusy ? (
+              <ActivityIndicator size="small" color={colors.dark} />
+            ) : (
+              <Text style={{ color: colors.dark, fontWeight: '800' }}>
+                {mnemonic ? 'Get Another Mnemonic' : 'Remember It!'}
+              </Text>
+            )}
+          </TouchableOpacity>
+        </View>
+
         {detail.type === 'kanji' && detailWordsSpotted.length > 0 && (
           <View style={styles.detailInfoCard}>
             <Text style={styles.detailInfoLabel}>Words spotted</Text>
@@ -514,6 +724,9 @@ export function DetailScreen() {
     renderExampleContent,
     detailWordRomaji,
     sentenceWordsBusy,
+    mnemonic,
+    mnemonicBusy,
+    onPressCreateMnemonic,
   ]);
 
   if (!detail) {

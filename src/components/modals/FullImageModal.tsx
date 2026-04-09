@@ -1,11 +1,76 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, Modal, TouchableOpacity, ScrollView, ActivityIndicator, TextInput, Animated, TouchableWithoutFeedback, PanResponder } from 'react-native';
+import { View, Text, Modal, TouchableOpacity, ScrollView, ActivityIndicator, TextInput, Animated, TouchableWithoutFeedback, PanResponder, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ImageViewer from 'react-native-image-zoom-viewer';
-import { styles } from '../../styles/theme';
+import { toRomaji } from 'wanakana';
+import { colors, styles } from '../../styles/theme';
 import { PhotoEntry, FullImageMeta, MetaCacheEntry } from '../../types';
 import { SegmentedToggle } from '../SegmentedToggle';
-import { useSwipePager } from '../../hooks';
+import { useSwipePager, useSpeech } from '../../hooks';
+import { Ionicons } from '@expo/vector-icons';
+import { generateContextExplanation } from '../../../services/contextExplanation';
+import { processImage } from '../../../services/ocr';
+import { updatePhotoOcrText } from '../../../services/database';
+import { tokenizeSentenceWords, WordInfo } from '../../../services/dictionary';
+import { analyzeImage } from '../../../services/imageAnalysis';
+import { getPreference, setPreference } from '../../../utils/preferences';
+
+type ContextCacheEntry = { sentence: string; romaji: string; explanation: string };
+type ContextCache = Record<string, ContextCacheEntry>;
+
+const CONTEXT_CACHE_KEY = 'contextExplanationCache';
+const IMAGE_ANALYSIS_CACHE_KEY = 'imageAnalysisCache';
+
+type ImageAnalysisCache = Record<string, string>;
+
+async function loadImageAnalysisCache(): Promise<ImageAnalysisCache> {
+  const raw = await getPreference(IMAGE_ANALYSIS_CACHE_KEY);
+  if (!raw) return {};
+  try { return JSON.parse(raw) as ImageAnalysisCache; } catch { return {}; }
+}
+
+async function saveImageAnalysisCacheEntry(photoId: number, text: string): Promise<void> {
+  const cache = await loadImageAnalysisCache();
+  cache[String(photoId)] = text;
+  await setPreference(IMAGE_ANALYSIS_CACHE_KEY, JSON.stringify(cache));
+}
+
+async function loadContextCache(): Promise<ContextCache> {
+  const raw = await getPreference(CONTEXT_CACHE_KEY);
+  if (!raw) return {};
+  try { return JSON.parse(raw) as ContextCache; } catch { return {}; }
+}
+
+async function saveContextCacheEntry(key: string, entry: ContextCacheEntry): Promise<void> {
+  const cache = await loadContextCache();
+  cache[key] = entry;
+  await setPreference(CONTEXT_CACHE_KEY, JSON.stringify(cache));
+}
+
+function parseContextResponse(raw: string): { sentence: string; romaji: string; explanation: string } {
+  const sentenceMatch = raw.match(/\[SENTENCE\]([\s\S]*?)\[\/SENTENCE\]/);
+  const romajiMatch = raw.match(/\[ROMAJI\]([\s\S]*?)\[\/ROMAJI\]/);
+  const explanationMatch = raw.match(/\[EXPLANATION\]([\s\S]*?)\[\/EXPLANATION\]/);
+
+  let sentence: string;
+  let explanation: string;
+
+  if (sentenceMatch && explanationMatch) {
+    sentence = sentenceMatch[1].trim();
+    explanation = explanationMatch[1].trim();
+  } else {
+    const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
+    sentence = lines[0] ?? '';
+    explanation = lines.slice(1).join('\n');
+  }
+
+  let romaji = romajiMatch ? romajiMatch[1].trim() : '';
+  if (!romaji && sentence) {
+    romaji = toRomaji(sentence).trim();
+  }
+
+  return { sentence, romaji, explanation };
+}
 
 interface FullImageModalProps {
   photo: PhotoEntry | null;
@@ -29,6 +94,9 @@ interface FullImageModalProps {
   onOpenKanji: (k: string) => void;
   onOpenWord: (w: string) => void;
   onDelete: () => void;
+  geminiApiKey: string | null;
+  ocrApiKey: string | null;
+  onOpenDetail: (type: 'kanji' | 'word', id: string) => void;
 }
 
 export function FullImageModal({
@@ -53,17 +121,39 @@ export function FullImageModal({
   onOpenKanji,
   onOpenWord,
   onDelete,
+  geminiApiKey,
+  ocrApiKey,
+  onOpenDetail,
 }: FullImageModalProps) {
   const insets = useSafeAreaInsets();
+  const { speakJa } = useSpeech();
   const [editMode, setEditMode] = useState(false);
   const [draftKanji, setDraftKanji] = useState<string[]>([]);
   const [draftWords, setDraftWords] = useState<string[]>([]);
   const [retakeChoiceVisible, setRetakeChoiceVisible] = useState(false);
+  const [overflowVisible, setOverflowVisible] = useState(false);
+
+  const [contextModalVisible, setContextModalVisible] = useState(false);
+  const [contextLoading, setContextLoading] = useState(false);
+  const [contextSentence, setContextSentence] = useState('');
+  const [contextRomaji, setContextRomaji] = useState('');
+  const [contextExplanation, setContextExplanation] = useState('');
+  const [contextTarget, setContextTarget] = useState('');
+  const [contextType, setContextType] = useState<'kanji' | 'word'>('word');
+  const [contextError, setContextError] = useState('');
+
+  const [contextWordsModal, setContextWordsModal] = useState<{ visible: boolean; words: WordInfo[] }>({ visible: false, words: [] });
+  const [contextWordsBusy, setContextWordsBusy] = useState(false);
 
   const [tokenEditorVisible, setTokenEditorVisible] = useState(false);
   const [tokenKind, setTokenKind] = useState<'kanji' | 'word'>('kanji');
   const [tokenIndex, setTokenIndex] = useState(0);
   const [tokenValue, setTokenValue] = useState('');
+
+  const [analysisModalVisible, setAnalysisModalVisible] = useState(false);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisText, setAnalysisText] = useState('');
+  const [analysisError, setAnalysisError] = useState('');
 
   const kanjiScrollRef = useRef<ScrollView | null>(null);
   const wordScrollRef = useRef<ScrollView | null>(null);
@@ -115,6 +205,7 @@ export function FullImageModal({
     setEditMode(false);
     setTokenEditorVisible(false);
     setRetakeChoiceVisible(false);
+    setOverflowVisible(false);
     setTokenValue('');
   }, [photo?.id, menuVisible]);
 
@@ -160,8 +251,11 @@ export function FullImageModal({
 
   const wordRows = useMemo(() => {
     return displayWords.map((w) => {
-      const gloss = metaCache[`word:${w}`]?.meaning ?? '';
-      return { w, gloss };
+      const cached = metaCache[`word:${w}`];
+      const gloss = cached?.meaning ?? '';
+      const reading = cached?.reading?.trim() || '';
+      const romaji = reading ? toRomaji(reading).trim() : '';
+      return { w, gloss, romaji };
     });
   }, [displayWords, metaCache]);
 
@@ -241,6 +335,145 @@ export function FullImageModal({
     [onOpenWord, onScrollYChange]
   );
 
+  const ocrTextCacheRef = useRef<Record<number, string>>({});
+
+  const handleContextQuery = useCallback(
+    async (token: string, type: 'kanji' | 'word', forceRefresh = false) => {
+      if (!photo) return;
+      if (!geminiApiKey) {
+        Alert.alert('No Gemini API Key', 'Please add your Gemini API key in Settings.');
+        return;
+      }
+
+      setContextTarget(token);
+      setContextType(type);
+      setContextError('');
+      setContextModalVisible(true);
+
+      const cacheKey = `${photo.id}:${type}:${token}`;
+
+      if (!forceRefresh) {
+        try {
+          const cache = await loadContextCache();
+          const cached = cache[cacheKey];
+          if (cached) {
+            setContextSentence(cached.sentence);
+            setContextRomaji(cached.romaji);
+            setContextExplanation(cached.explanation);
+            setContextLoading(false);
+            return;
+          }
+        } catch {}
+      }
+
+      setContextSentence('');
+      setContextRomaji('');
+      setContextExplanation('');
+      setContextLoading(true);
+
+      try {
+        let ocrText = photo.ocr_text;
+        if (!ocrText) {
+          const ocrCached = ocrTextCacheRef.current[photo.id];
+          if (ocrCached) {
+            ocrText = ocrCached;
+          } else {
+            if (!ocrApiKey) {
+              setContextError('No Cloud Vision API key configured. Cannot extract text for context.');
+              setContextLoading(false);
+              return;
+            }
+            const ocr = await processImage(photo.uri, ocrApiKey, false);
+            ocrText = ocr.text;
+            if (ocrText) {
+              ocrTextCacheRef.current[photo.id] = ocrText;
+              await updatePhotoOcrText(photo.id, ocrText).catch(() => {});
+            }
+          }
+        }
+
+        if (!ocrText) {
+          setContextError('No text could be extracted from this image.');
+          setContextLoading(false);
+          return;
+        }
+
+        const result = await generateContextExplanation(geminiApiKey, {
+          type,
+          text: token,
+          fullOcrText: ocrText,
+        });
+
+        const parsed = parseContextResponse(result.content);
+        await saveContextCacheEntry(cacheKey, parsed).catch(() => {});
+        setContextSentence(parsed.sentence);
+        setContextRomaji(parsed.romaji);
+        setContextExplanation(parsed.explanation);
+      } catch (err: any) {
+        setContextError(err?.message || 'Failed to generate context explanation.');
+      } finally {
+        setContextLoading(false);
+      }
+    },
+    [photo, geminiApiKey, ocrApiKey]
+  );
+
+  const handleImageAnalysis = useCallback(
+    async (forceRefresh = false) => {
+      if (!photo) return;
+      if (!geminiApiKey) {
+        Alert.alert('No Gemini API Key', 'Please add your Gemini API key in Settings.');
+        return;
+      }
+
+      setAnalysisError('');
+      setAnalysisModalVisible(true);
+
+      if (!forceRefresh) {
+        try {
+          const cache = await loadImageAnalysisCache();
+          const cached = cache[String(photo.id)];
+          if (cached) {
+            setAnalysisText(cached);
+            setAnalysisLoading(false);
+            return;
+          }
+        } catch {}
+      }
+
+      setAnalysisText('');
+      setAnalysisLoading(true);
+
+      try {
+        const result = await analyzeImage(geminiApiKey, photo.uri);
+        await saveImageAnalysisCacheEntry(photo.id, result).catch(() => {});
+        setAnalysisText(result);
+      } catch (err: any) {
+        setAnalysisError(err?.message || 'Failed to analyze image.');
+      } finally {
+        setAnalysisLoading(false);
+      }
+    },
+    [photo, geminiApiKey]
+  );
+
+  const handleContextSentencePress = useCallback(
+    async (japaneseLine: string) => {
+      setContextWordsBusy(true);
+      setContextWordsModal({ visible: true, words: [] });
+      try {
+        const words = await tokenizeSentenceWords(japaneseLine);
+        setContextWordsModal({ visible: true, words });
+      } catch {
+        setContextWordsModal((s) => ({ ...s, visible: false }));
+        Alert.alert('Error', 'Failed to analyze sentence words.');
+      } finally {
+        setContextWordsBusy(false);
+      }
+    },
+    []
+  );
+
   const [menuPagerWidth, setMenuPagerWidth] = useState(0);
 
   const onMenuTabChangeStable = useCallback(
@@ -299,6 +532,13 @@ export function FullImageModal({
           <Text style={styles.fullCloseText}>✕</Text>
         </TouchableOpacity>
 
+        <TouchableOpacity
+          style={[styles.fullClose, { top: Math.max(insets.top + 8, 32), right: undefined, left: 20 }]}
+          onPress={() => handleImageAnalysis()}
+        >
+          <Ionicons name="help" size={20} color={colors.text} />
+        </TouchableOpacity>
+
         {!menuVisible && (
           <View
             {...swipeUpResponder.panHandlers}
@@ -315,26 +555,6 @@ export function FullImageModal({
 
         {menuVisible && photo && (
           <View style={[styles.fullMenu, { paddingBottom: Math.max(insets.bottom, 20) + 10, zIndex: 10 }]}>
-            <View style={{ flexDirection: 'row', gap: 10 }}>
-              <TouchableOpacity
-                style={[styles.modalBtn, { flex: 1, paddingVertical: 10, opacity: reprocessBusy ? 0.7 : 1 }]}
-                onPress={onReprocess}
-                disabled={reprocessBusy}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  {reprocessBusy ? <ActivityIndicator size="small" color="#e8e8e8" /> : null}
-                  <Text style={styles.modalBtnText}>{reprocessBusy ? 'Reprocessing…' : '↻ Reprocess'}</Text>
-                </View>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.modalBtn, { flex: 1, paddingVertical: 10 }]}
-                onPress={() => setRetakeChoiceVisible(true)}
-              >
-                <Text style={styles.modalBtnText}>Retake</Text>
-              </TouchableOpacity>
-            </View>
-
             {editMode ? (
               <View style={{ flexDirection: 'row', gap: 10 }}>
                 <TouchableOpacity style={[styles.modalBtn, { flex: 1 }]} onPress={handleSaveEdits}>
@@ -366,14 +586,63 @@ export function FullImageModal({
                 />
               </View>
 
-              {!editMode ? (
+              <View style={{ position: 'relative' }}>
                 <TouchableOpacity
-                  style={[styles.modalBtn, { paddingVertical: 10, paddingHorizontal: 14, alignSelf: 'flex-end' }]}
-                  onPress={() => setEditMode(true)}
+                  onPress={() => setOverflowVisible((v) => !v)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  style={{ padding: 6 }}
                 >
-                  <Text style={styles.modalBtnText}>Edit Extracted Text</Text>
+                  <Ionicons name="ellipsis-vertical" size={20} color={colors.text} />
                 </TouchableOpacity>
-              ) : null}
+
+                {overflowVisible && (
+                  <View
+                    style={{
+                      position: 'absolute',
+                      right: 0,
+                      bottom: '100%',
+                      marginBottom: 6,
+                      backgroundColor: colors.surface,
+                      borderRadius: 8,
+                      borderWidth: 1,
+                      borderColor: colors.border,
+                      minWidth: 180,
+                      paddingVertical: 4,
+                      zIndex: 20,
+                      elevation: 8,
+                      shadowColor: '#000',
+                      shadowOffset: { width: 0, height: 2 },
+                      shadowOpacity: 0.35,
+                      shadowRadius: 6,
+                    }}
+                  >
+                    <TouchableOpacity
+                      style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 14, gap: 10, opacity: reprocessBusy ? 0.5 : 1 }}
+                      onPress={() => { setOverflowVisible(false); onReprocess(); }}
+                      disabled={reprocessBusy}
+                    >
+                      {reprocessBusy ? <ActivityIndicator size="small" color={colors.text} /> : <Ionicons name="refresh" size={16} color={colors.text} />}
+                      <Text style={{ color: colors.text, fontSize: 14 }}>{reprocessBusy ? 'Reprocessing…' : 'Reprocess'}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 14, gap: 10 }}
+                      onPress={() => { setOverflowVisible(false); setRetakeChoiceVisible(true); }}
+                    >
+                      <Ionicons name="camera-outline" size={16} color={colors.text} />
+                      <Text style={{ color: colors.text, fontSize: 14 }}>Retake</Text>
+                    </TouchableOpacity>
+                    {!editMode && (
+                      <TouchableOpacity
+                        style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 14, gap: 10 }}
+                        onPress={() => { setOverflowVisible(false); setEditMode(true); }}
+                      >
+                        <Ionicons name="pencil-outline" size={16} color={colors.text} />
+                        <Text style={{ color: colors.text, fontSize: 14 }}>Edit Extracted Text</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
+              </View>
             </View>
 
             <View
@@ -424,10 +693,19 @@ export function FullImageModal({
                                 onPress={() => (editMode ? openTokenEditor('kanji', idx, k) : handlePressKanjiRow(k))}
                                 activeOpacity={0.85}
                               >
-                                <Text style={styles.spottedMain} numberOfLines={1} ellipsizeMode="tail">
+                                <Text style={[styles.spottedMain, { flex: 1 }]} numberOfLines={1} ellipsizeMode="tail">
                                   {k}
                                   {meaning ? <Text style={styles.spottedGloss}> — {meaning}</Text> : null}
                                 </Text>
+                                {!editMode && (
+                                  <TouchableOpacity
+                                    onPress={() => handleContextQuery(k, 'kanji')}
+                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                    style={{ width: 26, height: 26, borderRadius: 13, borderWidth: 1.5, borderColor: colors.textMuted, alignItems: 'center', justifyContent: 'center', marginLeft: 8 }}
+                                  >
+                                    <Text style={{ color: colors.textMuted, fontSize: 14, fontWeight: '700', lineHeight: 16 }}>?</Text>
+                                  </TouchableOpacity>
+                                )}
                               </TouchableOpacity>
                             ))}
                           </View>
@@ -462,17 +740,27 @@ export function FullImageModal({
                       >
                         {wordRows.length ? (
                           <View style={{ marginTop: 10 }}>
-                            {wordRows.map(({ w, gloss }, idx) => (
+                            {wordRows.map(({ w, gloss, romaji }, idx) => (
                               <TouchableOpacity
                                 key={`${w}-${idx}`}
                                 style={styles.spottedRow}
                                 onPress={() => (editMode ? openTokenEditor('word', idx, w) : handlePressWordRow(w))}
                                 activeOpacity={0.85}
                               >
-                                <Text style={styles.spottedMain} numberOfLines={1} ellipsizeMode="tail">
+                                <Text style={[styles.spottedMain, { flex: 1 }]} numberOfLines={1} ellipsizeMode="tail">
                                   {w}
+                                  {romaji ? <Text style={styles.spottedGloss}> ({romaji})</Text> : null}
                                   {gloss ? <Text style={styles.spottedGloss}> — {gloss}</Text> : null}
                                 </Text>
+                                {!editMode && (
+                                  <TouchableOpacity
+                                    onPress={() => handleContextQuery(w, 'word')}
+                                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                    style={{ width: 26, height: 26, borderRadius: 13, borderWidth: 1.5, borderColor: colors.textMuted, alignItems: 'center', justifyContent: 'center', marginLeft: 8 }}
+                                  >
+                                    <Text style={{ color: colors.textMuted, fontSize: 14, fontWeight: '700', lineHeight: 16 }}>?</Text>
+                                  </TouchableOpacity>
+                                )}
                               </TouchableOpacity>
                             ))}
                           </View>
@@ -550,6 +838,175 @@ export function FullImageModal({
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.modalBtn, styles.modalCancel]} onPress={() => setRetakeChoiceVisible(false)}>
                   <Text style={styles.modalBtnText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </TouchableWithoutFeedback>
+          </TouchableOpacity>
+        </Modal>
+
+        <Modal
+          visible={contextModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setContextModalVisible(false)}
+        >
+          <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setContextModalVisible(false)}>
+            <TouchableWithoutFeedback>
+              <View style={[styles.modalCard, { maxHeight: '70%' }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <Text style={[styles.modalTitle, { flex: 1, marginBottom: 0 }]}>Context: {contextTarget}</Text>
+                  {!contextLoading && (
+                    <TouchableOpacity
+                      onPress={() => handleContextQuery(contextTarget, contextType, true)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      activeOpacity={0.6}
+                      style={{ paddingLeft: 12 }}
+                    >
+                      <Text style={{ color: colors.textMuted, fontSize: 16 }}>↻</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+                {contextLoading ? (
+                  <View style={{ alignItems: 'center', paddingVertical: 24 }}>
+                    <ActivityIndicator size="large" color={colors.accent} />
+                    <Text style={{ color: colors.textMuted, marginTop: 12, fontSize: 14 }}>Analyzing context…</Text>
+                  </View>
+                ) : contextError ? (
+                  <Text style={{ color: colors.accent, fontSize: 14, lineHeight: 20 }}>{contextError}</Text>
+                ) : (
+                  <ScrollView style={{ maxHeight: 340 }}>
+                    {contextSentence ? (
+                      <View style={{ marginBottom: 12 }}>
+                        <TouchableOpacity
+                          onPress={() => handleContextSentencePress(contextSentence)}
+                          activeOpacity={0.7}
+                          disabled={contextWordsBusy}
+                        >
+                          <Text style={{ color: colors.info, fontSize: 16, lineHeight: 24, fontWeight: '600' }}>
+                            {contextSentence}
+                          </Text>
+                        </TouchableOpacity>
+                        {contextRomaji ? (
+                          <TouchableOpacity onPress={() => speakJa(contextSentence)} activeOpacity={0.7} style={{ marginTop: 4 }}>
+                            <Text style={{ color: colors.textMuted, fontSize: 14, lineHeight: 20, fontStyle: 'italic' }}>
+                              {contextRomaji}
+                              {'  '}
+                              <Ionicons name="volume-medium-outline" size={15} color={colors.textDim} />
+                            </Text>
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
+                    ) : null}
+                    {contextExplanation ? (
+                      <Text style={{ color: colors.text, fontSize: 15, lineHeight: 22 }}>{contextExplanation}</Text>
+                    ) : null}
+                  </ScrollView>
+                )}
+                <TouchableOpacity style={[styles.modalBtn, styles.modalCancel, { marginTop: 14 }]} onPress={() => setContextModalVisible(false)}>
+                  <Text style={styles.modalBtnText}>Close</Text>
+                </TouchableOpacity>
+              </View>
+            </TouchableWithoutFeedback>
+          </TouchableOpacity>
+        </Modal>
+
+        <Modal
+          visible={contextWordsModal.visible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setContextWordsModal((s) => ({ ...s, visible: false }))}
+        >
+          <TouchableOpacity
+            style={styles.modalOverlay}
+            activeOpacity={1}
+            onPress={() => setContextWordsModal((s) => ({ ...s, visible: false }))}
+          >
+            <TouchableWithoutFeedback>
+              <View style={[styles.modalCard, { maxHeight: '70%' }]}>
+                <Text style={styles.modalTitle}>Words in this sentence</Text>
+                {contextWordsBusy ? (
+                  <ActivityIndicator size="small" color={colors.info} style={{ marginVertical: 12 }} />
+                ) : contextWordsModal.words.length === 0 ? (
+                  <Text style={styles.mutedSmall}>No dictionary words found.</Text>
+                ) : (
+                  <ScrollView>
+                    {contextWordsModal.words.map((w) => (
+                      <TouchableOpacity
+                        key={w.word}
+                        style={styles.spottedRow}
+                        onPress={() => {
+                          setContextWordsModal((s) => ({ ...s, visible: false }));
+                          setContextModalVisible(false);
+                          onOpenDetail('word', w.word);
+                        }}
+                        activeOpacity={0.85}
+                      >
+                        <Text style={[styles.spottedMain, { flex: 1 }]} numberOfLines={1} ellipsizeMode="tail">
+                          {w.word}
+                          {w.reading ? <Text style={styles.spottedGloss}> ({toRomaji(w.reading)})</Text> : null}
+                          {w.meaning.length > 0 ? <Text style={styles.spottedGloss}> — {w.meaning.join(', ')}</Text> : null}
+                        </Text>
+                        <TouchableOpacity
+                          onPress={() => {
+                            setContextWordsModal((s) => ({ ...s, visible: false }));
+                            handleContextQuery(w.word, 'word');
+                          }}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          style={{ width: 26, height: 26, borderRadius: 13, borderWidth: 1.5, borderColor: colors.textMuted, alignItems: 'center', justifyContent: 'center', marginLeft: 8 }}
+                        >
+                          <Text style={{ color: colors.textMuted, fontSize: 14, fontWeight: '700', lineHeight: 16 }}>?</Text>
+                        </TouchableOpacity>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                )}
+                <TouchableOpacity
+                  style={[styles.modalBtn, styles.modalCancel, { marginTop: 10 }]}
+                  onPress={() => setContextWordsModal((s) => ({ ...s, visible: false }))}
+                >
+                  <Text style={styles.modalBtnText}>Close</Text>
+                </TouchableOpacity>
+              </View>
+            </TouchableWithoutFeedback>
+          </TouchableOpacity>
+        </Modal>
+
+        <Modal
+          visible={analysisModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setAnalysisModalVisible(false)}
+        >
+          <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setAnalysisModalVisible(false)}>
+            <TouchableWithoutFeedback>
+              <View style={[styles.modalCard, { maxHeight: '70%' }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <Text style={[styles.modalTitle, { flex: 1, marginBottom: 0 }]}>Image Summary</Text>
+                  {!analysisLoading && (
+                    <TouchableOpacity
+                      onPress={() => handleImageAnalysis(true)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      activeOpacity={0.6}
+                      style={{ paddingLeft: 12 }}
+                    >
+                      <Text style={{ color: colors.textMuted, fontSize: 16 }}>↻</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+                {analysisLoading ? (
+                  <View style={{ alignItems: 'center', paddingVertical: 24 }}>
+                    <ActivityIndicator size="large" color={colors.accent} />
+                    <Text style={{ color: colors.textMuted, marginTop: 12, fontSize: 14 }}>Analyzing image…</Text>
+                  </View>
+                ) : analysisError ? (
+                  <Text style={{ color: colors.accent, fontSize: 14, lineHeight: 20 }}>{analysisError}</Text>
+                ) : (
+                  <ScrollView style={{ maxHeight: 340 }}>
+                    <Text style={{ color: colors.text, fontSize: 15, lineHeight: 22 }}>{analysisText}</Text>
+                  </ScrollView>
+                )}
+                <TouchableOpacity style={[styles.modalBtn, styles.modalCancel, { marginTop: 14 }]} onPress={() => setAnalysisModalVisible(false)}>
+                  <Text style={styles.modalBtnText}>Close</Text>
                 </TouchableOpacity>
               </View>
             </TouchableWithoutFeedback>

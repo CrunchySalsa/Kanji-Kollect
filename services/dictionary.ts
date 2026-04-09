@@ -318,6 +318,56 @@ export async function isKnownWord(word: string): Promise<boolean> {
 }
 
 /**
+ * Greedy longest-match tokenizer against the dictionary.
+ * Returns distinct dictionary words found in the sentence, in order of appearance.
+ */
+export async function tokenizeSentenceWords(sentence: string): Promise<WordInfo[]> {
+  const clean = sentence.replace(/\*\*/g, '').trim();
+  if (!clean) return [];
+
+  const MAX_LEN = 8;
+  const chars = Array.from(clean);
+
+  const allSubstrings = new Set<string>();
+  for (let i = 0; i < chars.length; i++) {
+    for (let len = 2; len <= MAX_LEN && i + len <= chars.length; len++) {
+      allSubstrings.add(chars.slice(i, i + len).join(''));
+    }
+  }
+
+  const batchResult = await lookupWordBatch(Array.from(allSubstrings));
+
+  const result: WordInfo[] = [];
+  const seen = new Set<string>();
+  let i = 0;
+
+  while (i < chars.length) {
+    let matched: WordInfo | null = null;
+    let matchLen = 0;
+
+    for (let len = Math.min(MAX_LEN, chars.length - i); len >= 2; len--) {
+      const substr = chars.slice(i, i + len).join('');
+      const info = batchResult.get(substr);
+      if (info) {
+        matched = info;
+        matchLen = len;
+        break;
+      }
+    }
+
+    if (matched && !seen.has(matched.word)) {
+      seen.add(matched.word);
+      result.push(matched);
+      i += matchLen;
+    } else {
+      i += matched ? matchLen : 1;
+    }
+  }
+
+  return result;
+}
+
+/**
  * Batch lookup for multiple kanji characters.
  * Returns a map of character -> KanjiInfo (normalized readings).
  * Missing characters are not included in the map.

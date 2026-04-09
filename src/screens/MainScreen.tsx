@@ -71,6 +71,8 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
     onDeletePhoto,
     captureFromCamera,
     pickFromGallery,
+    geminiApiKey,
+    apiKey,
   } = useAppContext();
 
   const [reprocessBusy, setReprocessBusy] = useState(false);
@@ -283,6 +285,9 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
         onOpenKanji={handleOpenKanjiFromFullImage}
         onOpenWord={handleOpenWordFromFullImage}
         onDelete={() => fullImagePhoto && onDeletePhoto(fullImagePhoto)}
+        geminiApiKey={geminiApiKey}
+        ocrApiKey={apiKey}
+        onOpenDetail={openDetail}
       />
 
       <EditModal

@@ -29,6 +29,7 @@ import {
   initDatabase,
   savePhoto,
   updatePhotoUri,
+  updatePhotoOcrText,
   getKanjiList,
   getKanjiCount,
   getKanjiListPaged,
@@ -108,6 +109,8 @@ interface AppContextType {
   apiKey: string | null;
   apiKeyLoading: boolean;
   setApiKey: (key: string) => Promise<void>;
+  geminiApiKey: string | null;
+  setGeminiApiKey: (key: string) => Promise<void>;
 
   // Screen navigation
   screen: Screen;
@@ -243,6 +246,7 @@ export function useListContext() {
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [apiKey, setApiKeyState] = useState<string | null>(null);
   const [apiKeyLoading, setApiKeyLoading] = useState(true);
+  const [geminiApiKey, setGeminiApiKeyState] = useState<string | null>(null);
   const [screen, setScreen] = useState<Screen>('list');
   const [items, setItems] = useState<ListItem[]>([]);
   const itemsRef = useRef<ListItem[]>([]);
@@ -495,6 +499,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const savedFilter = await getPreference('filterType');
       const savedGalleryType = await getPreference('galleryType');
       const savedApiKey = await getPreference('apiKey');
+      const savedGeminiApiKey = await getPreference('geminiApiKey');
       if (savedSort === 'encountered' || savedSort === 'practiced' || savedSort === 'mastery' || savedSort === 'priority') setSortMethodState(savedSort);
       if (savedSort === 'gap') setSortMethodState('priority');
       if (savedSortDir === 'asc' || savedSortDir === 'desc') setSortDirState(savedSortDir);
@@ -503,6 +508,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (savedFilter === 'words') setFilterType('word');
       if (savedGalleryType === 'encounter' || savedGalleryType === 'practice') setGalleryTypeState(savedGalleryType);
       setApiKeyState(savedApiKey);
+      setGeminiApiKeyState(savedGeminiApiKey);
       setApiKeyLoading(false);
     })().catch((e) => console.error(e));
   }, []);
@@ -514,6 +520,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       await setPreference('apiKey', trimmed);
     } else {
       await removePreference('apiKey');
+    }
+  }, []);
+
+  const setGeminiApiKey = useCallback(async (key: string) => {
+    const trimmed = key.trim();
+    setGeminiApiKeyState(trimmed || null);
+    if (trimmed) {
+      await setPreference('geminiApiKey', trimmed);
+    } else {
+      await removePreference('geminiApiKey');
     }
   }, []);
 
@@ -1412,6 +1428,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const ocr = await processImage(photo.uri, apiKey, photo.type === 'practice');
         const { kanjiCounts, wordCounts } = await extractKanjiAndWordsWithCountsSmart(ocr.text, ocr.words);
 
+        await updatePhotoOcrText(photo.id, ocr.text);
         if (Object.keys(kanjiCounts).length) await setPhotoKanjiCounts(photo.id, photo.type, kanjiCounts);
         if (Object.keys(wordCounts).length) await setPhotoWordCounts(photo.id, photo.type, wordCounts);
 
@@ -1460,6 +1477,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const { kanjiCounts, wordCounts } = await extractKanjiAndWordsWithCountsSmart(ocr.text, ocr.words);
 
         await updatePhotoUri(photo.id, storedUri, updatedAt);
+        await updatePhotoOcrText(photo.id, ocr.text);
 
         if (Object.keys(kanjiCounts).length) {
           await setPhotoKanjiCounts(photo.id, photo.type, kanjiCounts);
@@ -1591,12 +1609,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const storedUri = await savePhotoToStorage(sourceUri);
       const ocr = await processImage(storedUri, apiKey, photoType === 'practice');
       const { kanji, words, kanjiCounts, wordCounts } = await extractKanjiAndWordsWithCountsSmart(ocr.text, ocr.words);
-      const photoId = await savePhoto(storedUri, photoType);
+      const photoId = await savePhoto(storedUri, photoType, ocr.text);
       if (Object.keys(kanjiCounts).length) await setPhotoKanjiCounts(photoId, photoType, kanjiCounts);
       if (Object.keys(wordCounts).length) await setPhotoWordCounts(photoId, photoType, wordCounts);
       await reloadList();
       if (screenRef.current === 'gallery') await reloadGallery();
-      const newPhoto: PhotoEntry = { id: photoId, type: photoType, uri: storedUri, created_at: Date.now(), ocr_complete: 1 };
+      const newPhoto: PhotoEntry = { id: photoId, type: photoType, uri: storedUri, created_at: Date.now(), ocr_complete: 1, ocr_text: ocr.text };
       Alert.alert('Saved', `Extracted ${kanji.length} kanji and ${words.length} words.`, [
         {
           text: 'View',
@@ -1655,7 +1673,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       let totalKanji = 0;
       let totalWords = 0;
       for (const r of allResults) {
-        const photoId = await savePhoto(r.storedUri, photoType);
+        const photoId = await savePhoto(r.storedUri, photoType, r.ocrText);
         if (Object.keys(r.kanjiCounts).length) await setPhotoKanjiCounts(photoId, photoType, r.kanjiCounts);
         if (Object.keys(r.wordCounts).length) await setPhotoWordCounts(photoId, photoType, r.wordCounts);
         totalKanji += r.kanji.length;
@@ -1828,6 +1846,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     apiKey,
     apiKeyLoading,
     setApiKey,
+    geminiApiKey,
+    setGeminiApiKey,
     screen,
     setScreen,
     goBack,

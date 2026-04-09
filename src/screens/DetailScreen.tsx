@@ -12,6 +12,7 @@ import { generateMnemonic, MnemonicError, MnemonicResult } from '../../services/
 import { tokenizeSentenceWords, WordInfo } from '../../services/dictionary';
 import { toRomaji } from 'wanakana';
 import * as Clipboard from 'expo-clipboard';
+import { Ionicons } from '@expo/vector-icons';
 
 export function DetailScreen() {
   const {
@@ -309,7 +310,7 @@ export function DetailScreen() {
       for (const part of parts) {
         if (part.startsWith('**') && part.endsWith('**')) {
           nodes.push(
-            <Text key={`hl-${keyIndex++}`} style={{ backgroundColor: 'rgba(96,165,250,0.18)', borderRadius: 3, fontWeight: '700' }}>
+            <Text key={`hl-${keyIndex++}`} style={{ backgroundColor: 'rgba(96,165,250,0.35)', borderRadius: 3, fontWeight: '700' }}>
               {part.slice(2, -2)}
             </Text>
           );
@@ -369,6 +370,7 @@ export function DetailScreen() {
     if (!lines.length) return null;
     const sentenceLines = lines.length >= 3 ? lines.slice(-3) : lines;
     const explanationLines = lines.length >= 3 ? lines.slice(0, -3) : [];
+    const japaneseLine = sentenceLines[0] ?? '';
 
     return (
       <>
@@ -390,23 +392,41 @@ export function DetailScreen() {
         <View style={{ marginTop: 6, marginBottom: 2 }}>
           <Text style={styles.detailInfoLabel}>Example sentence</Text>
         </View>
-        {sentenceLines.map((line, index) => (
-          <View key={`example-line-${index}`} style={{ flexDirection: 'row', marginTop: index > 0 ? 6 : 0 }}>
-            <Text style={[styles.detailInfoValue, { marginRight: 8 }]}>-</Text>
-            <View style={{ flex: 1 }}>
-              {index === 0 ? (
-                <TouchableOpacity onPress={() => onPressSentenceLine(line)} activeOpacity={0.7} disabled={sentenceWordsBusy}>
-                  {renderHighlightedText(line, [styles.detailInfoValue, { lineHeight: 20, color: colors.info }])}
-                </TouchableOpacity>
-              ) : (
-                renderHighlightedText(line, [styles.detailInfoValue, { lineHeight: 20 }])
-              )}
-            </View>
+        <View key="example-sentence-block" style={{ flexDirection: 'row' }}>
+          <Text style={[styles.detailInfoValue, { marginRight: 8 }]}>-</Text>
+          <View style={{ flex: 1 }}>
+            {sentenceLines[0] ? (
+              <TouchableOpacity onPress={() => onPressSentenceLine(sentenceLines[0])} activeOpacity={0.7} disabled={sentenceWordsBusy}>
+                {renderHighlightedText(sentenceLines[0], [styles.detailInfoValue, { lineHeight: 20, color: colors.info }])}
+              </TouchableOpacity>
+            ) : null}
+            {sentenceLines[1] ? (
+              <TouchableOpacity onPress={() => speakJa(japaneseLine.replace(/\*\*/g, ''))} activeOpacity={0.7} style={{ marginTop: 4 }}>
+                <Text style={[styles.detailInfoValue, { lineHeight: 20, fontStyle: 'italic' }]}>
+                  {sentenceLines[1].split(/(\*\*[^*]+\*\*)/g).map((seg, i) =>
+                    seg.startsWith('**') && seg.endsWith('**') ? (
+                      <Text key={i} style={{ backgroundColor: 'rgba(96,165,250,0.35)', borderRadius: 3, fontWeight: '700' }}>
+                        {seg.slice(2, -2)}
+                      </Text>
+                    ) : (
+                      <Text key={i}>{seg}</Text>
+                    )
+                  )}
+                  {'  '}
+                  <Ionicons name="volume-medium-outline" size={15} color={colors.textDim} />
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+            {sentenceLines[2] ? (
+              <View style={{ marginTop: 6 }}>
+                {renderHighlightedText(`(${sentenceLines[2]})`, [styles.detailInfoValue, { lineHeight: 20, fontSize: 13, fontStyle: 'italic' }])}
+              </View>
+            ) : null}
           </View>
-        ))}
+        </View>
       </>
     );
-  }, [renderHighlightedText, onPressSentenceLine, sentenceWordsBusy]);
+  }, [renderHighlightedText, onPressSentenceLine, sentenceWordsBusy, speakJa]);
 
   const headerComponent = useMemo(() => {
     if (!detail) return null;
@@ -555,7 +575,7 @@ export function DetailScreen() {
 
                 const linkifyKanji = (text: string, baseStyle: any, keyPrefix: string) => {
                   const cleaned = text.replace(/\*+/g, '').replace(/_([^_]+)_/g, '$1');
-                  const tokenPattern = /(\[B\][\s\S]*?\[\/B\])|([\u3400-\u4DBF\u4E00-\u9FFF\u3005]+)/g;
+                  const tokenPattern = /(\[B\][\s\S]*?\[\/B\])|([\u3400-\u4DBF\u4E00-\u9FFF\u3005]+)/gi;
                   const nodes: React.ReactNode[] = [];
                   let last = 0;
                   let ki = 0;
@@ -563,7 +583,7 @@ export function DetailScreen() {
                   let m: RegExpExecArray | null;
                   while ((m = tokenPattern.exec(cleaned)) !== null) {
                     if (m.index > last) {
-                      nodes.push(<Text key={`${keyPrefix}-t${ki++}`}>{cleaned.slice(last, m.index)}</Text>);
+                      nodes.push(<Text key={`${keyPrefix}-t${ki++}`}>{cleaned.slice(last, m.index).replace(/\[\/?B\]/gi, '')}</Text>);
                     }
                     if (m[1]) {
                       nodes.push(
@@ -587,7 +607,7 @@ export function DetailScreen() {
                     last = m.index + m[0].length;
                   }
                   if (last < cleaned.length) {
-                    nodes.push(<Text key={`${keyPrefix}-t${ki++}`}>{cleaned.slice(last)}</Text>);
+                    nodes.push(<Text key={`${keyPrefix}-t${ki++}`}>{cleaned.slice(last).replace(/\[\/?B\]/gi, '')}</Text>);
                   }
                   return <Text style={baseStyle}>{nodes}</Text>;
                 };

@@ -72,6 +72,7 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
     captureFromCamera,
     pickFromGallery,
     geminiApiKey,
+    setGeminiApiKey,
     apiKey,
   } = useAppContext();
 
@@ -286,6 +287,7 @@ export function MainScreen({ onOpenSettings }: MainScreenProps) {
         onOpenWord={handleOpenWordFromFullImage}
         onDelete={() => fullImagePhoto && onDeletePhoto(fullImagePhoto)}
         geminiApiKey={geminiApiKey}
+        setGeminiApiKey={setGeminiApiKey}
         ocrApiKey={apiKey}
         onOpenDetail={openDetail}
       />

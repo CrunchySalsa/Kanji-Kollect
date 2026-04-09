@@ -33,7 +33,7 @@ export async function generateContextExplanation(
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: 0.4,
-          maxOutputTokens: 400,
+          maxOutputTokens: 600,
           thinkingConfig: {
             thinkingBudget: 0,
           },

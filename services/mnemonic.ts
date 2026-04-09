@@ -19,7 +19,7 @@ export async function generateMnemonic(
     throw new MnemonicError('No Gemini API key configured. Please add it in Settings.');
   }
 
-  const prompt = buildMnemonicPrompt(item);
+  const { prompt, needsThinking } = buildMnemonicPrompt(item);
 
   let response: Response;
   try {
@@ -32,10 +32,10 @@ export async function generateMnemonic(
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
-          temperature: 0.9,
-          maxOutputTokens: 300,
+          temperature: needsThinking ? 0.5 : 0.9,
+          maxOutputTokens: needsThinking ? 4096 : 300,
           thinkingConfig: {
-            thinkingBudget: 0,
+            thinkingBudget: needsThinking ? 2048 : 0,
           },
         },
       }),
@@ -70,7 +70,8 @@ export async function generateMnemonic(
 
   const text =
     data?.candidates?.[0]?.content?.parts
-      ?.map((p: any) => (typeof p?.text === 'string' ? p.text : ''))
+      ?.filter((p: any) => !p.thought)
+      .map((p: any) => (typeof p?.text === 'string' ? p.text : ''))
       .join('\n')
       .trim() ?? '';
 

@@ -11,11 +11,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { generateContextExplanation } from '../../../services/contextExplanation';
 import { processImage } from '../../../services/ocr';
 import { updatePhotoOcrText } from '../../../services/database';
-import { tokenizeSentenceWords, WordInfo } from '../../../services/dictionary';
+import { tokenizeSentenceWords, lookupWordBatch, WordInfo } from '../../../services/dictionary';
 import { analyzeImage } from '../../../services/imageAnalysis';
 import { getPreference, setPreference } from '../../../utils/preferences';
 
-type ContextCacheEntry = { sentence: string; romaji: string; explanation: string };
+type ContextCacheEntry = { sentence: string; romaji: string; explanation: string; words?: Array<{ word: string; reading: string }> };
 type ContextCache = Record<string, ContextCacheEntry>;
 
 const CONTEXT_CACHE_KEY = 'contextExplanationCache';
@@ -47,29 +47,64 @@ async function saveContextCacheEntry(key: string, entry: ContextCacheEntry): Pro
   await setPreference(CONTEXT_CACHE_KEY, JSON.stringify(cache));
 }
 
-function parseContextResponse(raw: string): { sentence: string; romaji: string; explanation: string } {
+function stripMarkdownArtifacts(text: string, keepBold = false): string {
+  let result = text;
+  if (!keepBold) result = result.replace(/\*\*(.+?)\*\*/g, '$1');
+  result = result
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/(?<![*\w])\*([^*]+)\*(?![*\w])/g, '$1')
+    .replace(/(?<!\w)_(.+?)_(?!\w)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '');
+  return result;
+}
+
+function stripContextTags(text: string): string {
+  return text.replace(/\[\/?(?:SENTENCE|ROMAJI|EXPLANATION|WORDS)\]/g, '').trim();
+}
+
+function parseWordsSection(raw: string): Array<{ word: string; reading: string }> {
+  const wordsMatch = raw.match(/\[WORDS\]([\s\S]*?)\[\/WORDS\]/);
+  if (!wordsMatch) return [];
+  const lines = wordsMatch[1].trim().split('\n').map((l) => l.trim()).filter(Boolean);
+  const results: Array<{ word: string; reading: string }> = [];
+  for (const line of lines) {
+    const m = line.match(/^(.+?)\s*[(\uff08](.+?)[)\uff09]\s*$/);
+    if (m) {
+      results.push({ word: m[1].trim(), reading: m[2].trim() });
+    } else {
+      const cleaned = line.replace(/^[-•]\s*/, '').trim();
+      if (cleaned) results.push({ word: cleaned, reading: '' });
+    }
+  }
+  return results;
+}
+
+function parseContextResponse(raw: string): { sentence: string; romaji: string; explanation: string; words: Array<{ word: string; reading: string }> } {
   const sentenceMatch = raw.match(/\[SENTENCE\]([\s\S]*?)\[\/SENTENCE\]/);
   const romajiMatch = raw.match(/\[ROMAJI\]([\s\S]*?)\[\/ROMAJI\]/);
   const explanationMatch = raw.match(/\[EXPLANATION\]([\s\S]*?)\[\/EXPLANATION\]/);
 
-  let sentence: string;
-  let explanation: string;
+  let sentence = sentenceMatch ? sentenceMatch[1].trim() : '';
+  let romaji = romajiMatch ? romajiMatch[1].trim() : '';
+  let explanation = explanationMatch ? explanationMatch[1].trim() : '';
 
-  if (sentenceMatch && explanationMatch) {
-    sentence = sentenceMatch[1].trim();
-    explanation = explanationMatch[1].trim();
-  } else {
+  if (!sentence && !explanation) {
     const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
     sentence = lines[0] ?? '';
     explanation = lines.slice(1).join('\n');
   }
 
-  let romaji = romajiMatch ? romajiMatch[1].trim() : '';
   if (!romaji && sentence) {
-    romaji = toRomaji(sentence).trim();
+    romaji = toRomaji(sentence.replace(/\*\*/g, '')).trim();
   }
 
-  return { sentence, romaji, explanation };
+  return {
+    sentence: stripContextTags(stripMarkdownArtifacts(sentence, true)),
+    romaji: stripContextTags(stripMarkdownArtifacts(romaji, true)),
+    explanation: stripContextTags(stripMarkdownArtifacts(explanation, true)),
+    words: parseWordsSection(raw),
+  };
 }
 
 interface FullImageModalProps {
@@ -95,6 +130,7 @@ interface FullImageModalProps {
   onOpenWord: (w: string) => void;
   onDelete: () => void;
   geminiApiKey: string | null;
+  setGeminiApiKey: (key: string) => Promise<void>;
   ocrApiKey: string | null;
   onOpenDetail: (type: 'kanji' | 'word', id: string) => void;
 }
@@ -122,6 +158,7 @@ export function FullImageModal({
   onOpenWord,
   onDelete,
   geminiApiKey,
+  setGeminiApiKey,
   ocrApiKey,
   onOpenDetail,
 }: FullImageModalProps) {
@@ -141,6 +178,7 @@ export function FullImageModal({
   const [contextTarget, setContextTarget] = useState('');
   const [contextType, setContextType] = useState<'kanji' | 'word'>('word');
   const [contextError, setContextError] = useState('');
+  const contextGeminiWordsRef = useRef<Array<{ word: string; reading: string }>>([]);
 
   const [contextWordsModal, setContextWordsModal] = useState<{ visible: boolean; words: WordInfo[] }>({ visible: false, words: [] });
   const [contextWordsBusy, setContextWordsBusy] = useState(false);
@@ -154,6 +192,11 @@ export function FullImageModal({
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisText, setAnalysisText] = useState('');
   const [analysisError, setAnalysisError] = useState('');
+
+  const [geminiPromptVisible, setGeminiPromptVisible] = useState(false);
+  const [geminiInput, setGeminiInput] = useState('');
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
+  const pendingGeminiActionRef = useRef<{ type: 'context'; token: string; contextType: 'kanji' | 'word' } | { type: 'analysis' } | null>(null);
 
   const kanjiScrollRef = useRef<ScrollView | null>(null);
   const wordScrollRef = useRef<ScrollView | null>(null);
@@ -338,10 +381,12 @@ export function FullImageModal({
   const ocrTextCacheRef = useRef<Record<number, string>>({});
 
   const handleContextQuery = useCallback(
-    async (token: string, type: 'kanji' | 'word', forceRefresh = false) => {
+    async (token: string, type: 'kanji' | 'word', forceRefresh = false, keyOverride?: string) => {
       if (!photo) return;
-      if (!geminiApiKey) {
-        Alert.alert('No Gemini API Key', 'Please add your Gemini API key in Settings.');
+      const activeKey = keyOverride?.trim() || geminiApiKey || '';
+      if (!activeKey) {
+        pendingGeminiActionRef.current = { type: 'context', token, contextType: type };
+        setGeminiPromptVisible(true);
         return;
       }
 
@@ -360,6 +405,7 @@ export function FullImageModal({
             setContextSentence(cached.sentence);
             setContextRomaji(cached.romaji);
             setContextExplanation(cached.explanation);
+            contextGeminiWordsRef.current = cached.words ?? [];
             setContextLoading(false);
             return;
           }
@@ -398,7 +444,7 @@ export function FullImageModal({
           return;
         }
 
-        const result = await generateContextExplanation(geminiApiKey, {
+        const result = await generateContextExplanation(activeKey, {
           type,
           text: token,
           fullOcrText: ocrText,
@@ -409,6 +455,7 @@ export function FullImageModal({
         setContextSentence(parsed.sentence);
         setContextRomaji(parsed.romaji);
         setContextExplanation(parsed.explanation);
+        contextGeminiWordsRef.current = parsed.words;
       } catch (err: any) {
         setContextError(err?.message || 'Failed to generate context explanation.');
       } finally {
@@ -419,10 +466,12 @@ export function FullImageModal({
   );
 
   const handleImageAnalysis = useCallback(
-    async (forceRefresh = false) => {
+    async (forceRefresh = false, keyOverride?: string) => {
       if (!photo) return;
-      if (!geminiApiKey) {
-        Alert.alert('No Gemini API Key', 'Please add your Gemini API key in Settings.');
+      const activeKey = keyOverride?.trim() || geminiApiKey || '';
+      if (!activeKey) {
+        pendingGeminiActionRef.current = { type: 'analysis' };
+        setGeminiPromptVisible(true);
         return;
       }
 
@@ -445,7 +494,7 @@ export function FullImageModal({
       setAnalysisLoading(true);
 
       try {
-        const result = await analyzeImage(geminiApiKey, photo.uri);
+        const result = await analyzeImage(activeKey, photo.uri);
         await saveImageAnalysisCacheEntry(photo.id, result).catch(() => {});
         setAnalysisText(result);
       } catch (err: any) {
@@ -457,12 +506,39 @@ export function FullImageModal({
     [photo, geminiApiKey]
   );
 
+  const saveGeminiKeyAndRetry = useCallback(async () => {
+    const trimmed = geminiInput.trim();
+    if (!trimmed) return;
+    await setGeminiApiKey(trimmed);
+    setGeminiPromptVisible(false);
+    setShowGeminiKey(false);
+    const pending = pendingGeminiActionRef.current;
+    pendingGeminiActionRef.current = null;
+    if (pending?.type === 'context') {
+      await handleContextQuery(pending.token, pending.contextType, false, trimmed);
+    } else if (pending?.type === 'analysis') {
+      await handleImageAnalysis(false, trimmed);
+    }
+  }, [geminiInput, setGeminiApiKey, handleContextQuery, handleImageAnalysis]);
+
   const handleContextSentencePress = useCallback(
     async (japaneseLine: string) => {
       setContextWordsBusy(true);
       setContextWordsModal({ visible: true, words: [] });
       try {
-        const words = await tokenizeSentenceWords(japaneseLine);
+        const geminiWords = contextGeminiWordsRef.current;
+        let words: WordInfo[];
+        if (geminiWords.length) {
+          const surfaces = geminiWords.map((w) => w.word);
+          const dictMap = await lookupWordBatch(surfaces);
+          words = geminiWords.map((gw) => {
+            const dict = dictMap.get(gw.word);
+            if (dict) return dict;
+            return { word: gw.word, reading: gw.reading, meaning: [] };
+          });
+        } else {
+          words = await tokenizeSentenceWords(japaneseLine);
+        }
         setContextWordsModal({ visible: true, words });
       } catch {
         setContextWordsModal((s) => ({ ...s, visible: false }));
@@ -502,6 +578,35 @@ export function FullImageModal({
     gesture: { minDx: 12, maxDy: 12, dominanceRatio: 1.2 },
   });
 
+  const renderBoldHighlights = useCallback((text: string, targets?: string[]): React.ReactNode[] => {
+    const hlStyle = { backgroundColor: 'rgba(96,165,250,0.35)', borderRadius: 3, fontWeight: '700' as const };
+    const boldParts = text.split(/(\*\*[^*]+\*\*)/g);
+    const nodes: React.ReactNode[] = [];
+    let ki = 0;
+
+    const validTargets = targets?.filter(Boolean) ?? [];
+    const targetRegex = validTargets.length
+      ? new RegExp(`(${validTargets.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'gi')
+      : null;
+
+    const splitByTargets = (seg: string): React.ReactNode[] => {
+      if (!targetRegex) return [<Text key={ki++}>{seg}</Text>];
+      const sub = seg.split(targetRegex);
+      return sub.map((s) =>
+        targetRegex.test(s) ? <Text key={ki++} style={hlStyle}>{s}</Text> : <Text key={ki++}>{s}</Text>
+      );
+    };
+
+    for (const part of boldParts) {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        nodes.push(<Text key={ki++} style={hlStyle}>{part.slice(2, -2)}</Text>);
+      } else {
+        nodes.push(...splitByTargets(part));
+      }
+    }
+    return nodes;
+  }, []);
+
   return (
     <Modal
       visible={!!photo}
@@ -532,12 +637,14 @@ export function FullImageModal({
           <Text style={styles.fullCloseText}>✕</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.fullClose, { top: Math.max(insets.top + 8, 32), right: undefined, left: 20 }]}
-          onPress={() => handleImageAnalysis()}
-        >
-          <Ionicons name="help" size={20} color={colors.text} />
-        </TouchableOpacity>
+        {photo?.type === 'encounter' && (
+          <TouchableOpacity
+            style={[styles.fullClose, { top: Math.max(insets.top + 8, 32), right: undefined, left: 20 }]}
+            onPress={() => handleImageAnalysis()}
+          >
+            <Ionicons name="help" size={20} color={colors.text} />
+          </TouchableOpacity>
+        )}
 
         {!menuVisible && (
           <View
@@ -878,18 +985,18 @@ export function FullImageModal({
                     {contextSentence ? (
                       <View style={{ marginBottom: 12 }}>
                         <TouchableOpacity
-                          onPress={() => handleContextSentencePress(contextSentence)}
+                          onPress={() => handleContextSentencePress(contextSentence.replace(/\*\*/g, ''))}
                           activeOpacity={0.7}
                           disabled={contextWordsBusy}
                         >
                           <Text style={{ color: colors.info, fontSize: 16, lineHeight: 24, fontWeight: '600' }}>
-                            {contextSentence}
+                            {renderBoldHighlights(contextSentence, [contextTarget])}
                           </Text>
                         </TouchableOpacity>
                         {contextRomaji ? (
-                          <TouchableOpacity onPress={() => speakJa(contextSentence)} activeOpacity={0.7} style={{ marginTop: 4 }}>
+                          <TouchableOpacity onPress={() => speakJa(contextSentence.replace(/\*\*/g, ''))} activeOpacity={0.7} style={{ marginTop: 4 }}>
                             <Text style={{ color: colors.textMuted, fontSize: 14, lineHeight: 20, fontStyle: 'italic' }}>
-                              {contextRomaji}
+                              {renderBoldHighlights(contextRomaji, [toRomaji(contextTarget)])}
                               {'  '}
                               <Ionicons name="volume-medium-outline" size={15} color={colors.textDim} />
                             </Text>
@@ -898,7 +1005,7 @@ export function FullImageModal({
                       </View>
                     ) : null}
                     {contextExplanation ? (
-                      <Text style={{ color: colors.text, fontSize: 15, lineHeight: 22 }}>{contextExplanation}</Text>
+                      <Text style={{ color: colors.text, fontSize: 15, lineHeight: 22 }}>{renderBoldHighlights(contextExplanation, [contextTarget, toRomaji(contextTarget)])}</Text>
                     ) : null}
                   </ScrollView>
                 )}
@@ -969,6 +1076,55 @@ export function FullImageModal({
               </View>
             </TouchableWithoutFeedback>
           </TouchableOpacity>
+        </Modal>
+
+        <Modal visible={geminiPromptVisible} transparent animationType="fade" onRequestClose={() => setGeminiPromptVisible(false)}>
+          <View style={[styles.modalOverlay, { justifyContent: 'center', paddingHorizontal: 24 }]}>
+            <View style={[styles.modalCard, { borderRadius: 16 }]}>
+              <Text style={styles.modalTitle}>Gemini API Key Required</Text>
+              <Text style={[styles.mutedSmall, { marginBottom: 8 }]}>
+                Enter your Gemini API key to use AI-powered features.
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TextInput
+                  style={{
+                    flex: 1,
+                    backgroundColor: colors.surfaceDark,
+                    borderRadius: 10,
+                    paddingVertical: 10,
+                    paddingHorizontal: 12,
+                    color: colors.text,
+                    fontWeight: '600',
+                  }}
+                  value={geminiInput}
+                  onChangeText={setGeminiInput}
+                  placeholder="Paste your Gemini API key"
+                  placeholderTextColor={colors.textDim}
+                  secureTextEntry={!showGeminiKey}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <TouchableOpacity
+                  onPress={() => setShowGeminiKey((v) => !v)}
+                  style={{ backgroundColor: colors.surfaceDark, borderRadius: 10, paddingHorizontal: 12, justifyContent: 'center' }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={{ color: colors.textMuted, fontWeight: '700' }}>{showGeminiKey ? 'Hide' : 'Show'}</Text>
+                </TouchableOpacity>
+              </View>
+              <TouchableOpacity
+                onPress={saveGeminiKeyAndRetry}
+                style={[styles.modalBtn, { backgroundColor: colors.info, marginTop: 8, opacity: geminiInput.trim() ? 1 : 0.65 }]}
+                activeOpacity={0.8}
+                disabled={!geminiInput.trim()}
+              >
+                <Text style={[styles.modalBtnText, { color: colors.dark }]}>Save Key</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setGeminiPromptVisible(false)} style={styles.modalBtn} activeOpacity={0.8}>
+                <Text style={styles.modalBtnText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         </Modal>
 
         <Modal

@@ -5,7 +5,12 @@ export interface MnemonicPromptInput {
   meaning?: string | null;
 }
 
-export function buildMnemonicPrompt(input: MnemonicPromptInput): string {
+export interface MnemonicPromptOutput {
+  prompt: string;
+  needsThinking: boolean;
+}
+
+export function buildMnemonicPrompt(input: MnemonicPromptInput): MnemonicPromptOutput {
   const isWord = input.type === 'word';
   const kanjiChars = Array.from(input.text).filter(ch => /[\u3400-\u4DBF\u4E00-\u9FFF\u3005]/.test(ch));
   const hasMultipleKanji = isWord && kanjiChars.length > 1;
@@ -51,23 +56,28 @@ export function buildMnemonicPrompt(input: MnemonicPromptInput): string {
     );
   } else if (isWord && hasSingleKanji) {
     lines.push(
-      `This is a single-kanji word. You need to decompose the kanji ${kanjiChars[0]} into components and build a mnemonic.`,
+      `This is a single-kanji word. Give the radical breakdown of the kanji ${kanjiChars[0]}. Break it into its main structural components (left/right, top/bottom, inner/outer). Do not go too many levels deep — just identify the major recognizable pieces that make up the character, then use those to build a mnemonic.`,
       '',
-      'Follow these steps logically (but only output the final result, not the steps):',
+      'Guidelines for decomposition:',
+      '- Stick to the 214 Kangxi radicals and widely-recognized kanji components. Do NOT invent or guess components.',
+      '- Prefer fewer accurate components over many uncertain ones.',
+      '- Name each component with its standard radical name and meaning.',
       '',
-      'Step A: Identify the top-level visual components of the kanji (the largest recognizable pieces that tile it with no overlap).',
-      'Step B: For each component, decide — is this component recognizable and meaningful on its own (e.g. 昜, 寺, 百)? If yes, keep it as-is. If it is too abstract or obscure to be memorable, break it down one level further into smaller recognizable pieces.',
-      'Step C: Verify that your final list of components, taken together, accounts for every visible part of the kanji. No region of the kanji should be unrepresented.',
-      'Step D: Build a mnemonic that references ALL of the listed components. A learner should be able to reconstruct the full kanji from your mnemonic — if any component is missing from the mnemonic, the learner will forget that part of the kanji.',
+      'Here is an example of a correct decomposition and mnemonic for the kanji 語 (language):',
       '',
-      'Output the following in this exact order:',
-      '',
-      '1. A [RADICALS] section with your final component list. Each on its own line prefixed with "- ". Even if there is only one, still use the [RADICALS] tags. Example:',
       '[RADICALS]',
-      '- 宀 (roof) — shelter, building',
-      '- 亻 (person) — someone staying',
-      '- 百 (hundred) — many, abundance',
+      '- 言 (speech, words) — the speech radical on the left',
+      '- 五 (five) — the upper-right portion',
+      '- 口 (mouth) — the lower-right portion',
       '[/RADICALS]',
+      'This kanji combines speech (言) with five (五) and mouth (口) on the right.',
+      '[MNEMONIC]',
+      'A [B]mouth[/B] that speaks [B]five[/B] different [B]words[/B] — that is [B]language[/B].',
+      '[/MNEMONIC]',
+      '',
+      'Now do the same for the target kanji. Output the following in this exact order:',
+      '',
+      '1. A [RADICALS] section with your component list. Each on its own line prefixed with "- ". Even if there is only one, still use the [RADICALS] tags.',
       '',
       '2. A brief line about the kanji\'s composition or visual structure.',
       '',
@@ -81,22 +91,28 @@ export function buildMnemonicPrompt(input: MnemonicPromptInput): string {
     );
   } else {
     lines.push(
-      'This is a single kanji. You need to decompose it into components and build a mnemonic.',
+      'This is a single kanji. Give the radical breakdown — break it into its main structural components (left/right, top/bottom, inner/outer). Do not go too many levels deep — just identify the major recognizable pieces that make up the character, then use those to build a mnemonic.',
       '',
-      'Follow these steps logically (but only output the final result, not the steps):',
+      'Guidelines for decomposition:',
+      '- Stick to the 214 Kangxi radicals and widely-recognized kanji components. Do NOT invent or guess components.',
+      '- Prefer fewer accurate components over many uncertain ones.',
+      '- Name each component with its standard radical name and meaning.',
       '',
-      'Step A: Identify the top-level visual components of the kanji (the largest recognizable pieces that tile it with no overlap).',
-      'Step B: For each component, decide — is this component recognizable and meaningful on its own (e.g. 昜, 寺, 百)? If yes, keep it as-is. If it is too abstract or obscure to be memorable, break it down one level further into smaller recognizable pieces.',
-      'Step C: Verify that your final list of components, taken together, accounts for every visible part of the kanji. No region of the kanji should be unrepresented.',
-      'Step D: Build a mnemonic that references ALL of the listed components. A learner should be able to reconstruct the full kanji from your mnemonic — if any component is missing from the mnemonic, the learner will forget that part of the kanji.',
+      'Here is an example of a correct decomposition and mnemonic for the kanji 語 (language):',
       '',
-      'Output the following in this exact order:',
-      '',
-      '1. A [RADICALS] section with your final component list. Each on its own line prefixed with "- ". Even if there is only one, still use the [RADICALS] tags. Example:',
       '[RADICALS]',
-      '- 土 (ground, earth) — location, physical space',
-      '- 昜 (sun rising, activity) — brightness, openness',
+      '- 言 (speech, words) — the speech radical on the left',
+      '- 五 (five) — the upper-right portion',
+      '- 口 (mouth) — the lower-right portion',
       '[/RADICALS]',
+      'This kanji combines speech (言) with five (五) and mouth (口) on the right.',
+      '[MNEMONIC]',
+      'A [B]mouth[/B] that speaks [B]five[/B] different [B]words[/B] — that is [B]language[/B].',
+      '[/MNEMONIC]',
+      '',
+      'Now do the same for the target kanji. Output the following in this exact order:',
+      '',
+      '1. A [RADICALS] section with your component list. Each on its own line prefixed with "- ". Even if there is only one, still use the [RADICALS] tags.',
       '',
       '2. A brief visual or structural observation about its shape (1 line).',
       '',
@@ -106,5 +122,7 @@ export function buildMnemonicPrompt(input: MnemonicPromptInput): string {
     );
   }
 
-  return lines.join('\n');
+  const needsThinking = !isWord || hasSingleKanji;
+
+  return { prompt: lines.join('\n'), needsThinking };
 }

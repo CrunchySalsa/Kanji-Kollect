@@ -25,7 +25,7 @@ export function buildExampleSentencePrompt(input: ExampleSentencePromptInput): s
     '',
     'Line 2: (blank line)',
     '',
-    'Line 3+: If similar words exist that learners commonly confuse with this one, write one or two sentences comparing them. Mention each similar word with its reading in parentheses. If no meaningful comparison exists, skip this section entirely.',
+    'Line 3+: If similar words exist that learners commonly confuse with this one, write one or two sentences comparing them. Mention each similar word with its reading in parentheses. If no meaningful comparison exists, omit this section entirely — do NOT write a line saying there are no similar words or that comparison is unnecessary.',
     '',
     'Next blank line, then exactly three lines:',
     'Line A: An example sentence in Japanese (natural, modern, useful real-world context). The target word must appear wrapped in **.',

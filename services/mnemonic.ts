@@ -23,7 +23,7 @@ export async function generateMnemonic(
 
   let response: Response;
   try {
-    response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent', {
+    response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -33,9 +33,9 @@ export async function generateMnemonic(
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: needsThinking ? 0.5 : 0.9,
-          maxOutputTokens: needsThinking ? 4096 : 300,
+          maxOutputTokens: needsThinking ? 8192 : 500,
           thinkingConfig: {
-            thinkingBudget: needsThinking ? 2048 : 0,
+            thinkingBudget: needsThinking ? 8192 : 128,
           },
         },
       }),

@@ -1,18 +1,40 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, Animated, Dimensions, ActivityIndicator, Modal, TextInput, Alert } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  TouchableWithoutFeedback,
+  ScrollView,
+  Animated,
+  Dimensions,
+  ActivityIndicator,
+  Modal,
+  TextInput,
+  Alert,
+} from 'react-native';
 import { styles, colors } from '../styles/theme';
 import { useAppContext } from '../context/AppContext';
 import { useSpeech } from '../hooks';
 import { PhotoThumbnail, EmptyState, SegmentedToggle } from '../components';
 import { useSwipePager } from '../hooks';
-import { GalleryType } from '../types';
+import { GalleryType, PhotoEntry } from '../types';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getPreference, setPreference } from '../../utils/preferences';
 import { generateExampleSentence, ExampleSentenceError, ExampleSentenceResult } from '../../services/exampleSentence';
 import { generateMnemonic, MnemonicError, MnemonicResult } from '../../services/mnemonic';
-import { tokenizeSentenceWords, WordInfo } from '../../services/dictionary';
+import { tokenizeSentenceWords, lookupWordBatch, WordInfo } from '../../services/dictionary';
+import { generateContextExplanation } from '../../services/contextExplanation';
+import { loadContextCache, parseContextResponse, saveContextCacheEntry } from '../../services/contextExplanationShared';
+import { processImage } from '../../services/ocr';
+import { updatePhotoOcrText } from '../../services/database';
 import { toRomaji } from 'wanakana';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
+
+type PendingGeminiDetail =
+  | { kind: 'example' }
+  | { kind: 'mnemonic' }
+  | { kind: 'photoContext'; photo: PhotoEntry; token: string; type: 'kanji' | 'word' };
 
 export function DetailScreen() {
   const {
@@ -31,8 +53,10 @@ export function DetailScreen() {
     isFavorite,
     geminiApiKey,
     setGeminiApiKey,
+    apiKey,
   } = useAppContext();
 
+  const insets = useSafeAreaInsets();
   const { speakJa } = useSpeech();
 
   const [photoType, setPhotoType] = useState<GalleryType>('encounter');
@@ -46,6 +70,30 @@ export function DetailScreen() {
   const [sentenceWordsBusy, setSentenceWordsBusy] = useState(false);
   const [mnemonic, setMnemonic] = useState<MnemonicResult | null>(null);
   const [mnemonicBusy, setMnemonicBusy] = useState(false);
+  const [photoContextMenu, setPhotoContextMenu] = useState<{ visible: boolean; photo: PhotoEntry | null }>({
+    visible: false,
+    photo: null,
+  });
+  const pendingGeminiRef = useRef<PendingGeminiDetail | null>(null);
+  const imageContextOcrCacheRef = useRef<Record<number, string>>({});
+  const imageContextGeminiWordsRef = useRef<Array<{ word: string; reading: string }>>([]);
+  const imageContextPhotoRef = useRef<PhotoEntry | null>(null);
+
+  const [imageContextModalVisible, setImageContextModalVisible] = useState(false);
+  const [imageContextLoading, setImageContextLoading] = useState(false);
+  const [imageContextSentence, setImageContextSentence] = useState('');
+  const [imageContextRomaji, setImageContextRomaji] = useState('');
+  const [imageContextExplanation, setImageContextExplanation] = useState('');
+  const [imageContextTarget, setImageContextTarget] = useState('');
+  const [imageContextKind, setImageContextKind] = useState<'kanji' | 'word'>('word');
+  const [imageContextError, setImageContextError] = useState('');
+
+  const [imageContextWordsModal, setImageContextWordsModal] = useState<{ visible: boolean; words: WordInfo[] }>({
+    visible: false,
+    words: [],
+  });
+  const [imageContextWordsBusy, setImageContextWordsBusy] = useState(false);
+
   const photosActiveIndex = photoType === 'encounter' ? 0 : 1;
 
   const normalizeExampleCacheValue = useCallback((v: any): ExampleSentenceResult | null => {
@@ -149,6 +197,7 @@ export function DetailScreen() {
       if (!detail) return;
       const activeKey = keyOverride?.trim() || geminiApiKey || '';
       if (!activeKey) {
+        pendingGeminiRef.current = { kind: 'mnemonic' };
         setGeminiPromptVisible(true);
         return;
       }
@@ -174,6 +223,7 @@ export function DetailScreen() {
 
   const onPressCreateMnemonic = useCallback(() => {
     if (!geminiApiKey) {
+      pendingGeminiRef.current = { kind: 'mnemonic' };
       setGeminiPromptVisible(true);
       return;
     }
@@ -204,6 +254,7 @@ export function DetailScreen() {
       if (!detail) return;
       const activeKey = keyOverride?.trim() || geminiApiKey || '';
       if (!activeKey) {
+        pendingGeminiRef.current = { kind: 'example' };
         setGeminiPromptVisible(true);
         return;
       }
@@ -227,17 +278,188 @@ export function DetailScreen() {
     [detail, detailKanjiInfo?.meanings, detailWordInfo?.meaning, detailWordInfo?.reading, geminiApiKey, persistExampleForCurrentItem]
   );
 
+  const runImageContextQuery = useCallback(
+    async (
+      photo: PhotoEntry,
+      token: string,
+      contextType: 'kanji' | 'word',
+      keyOverride?: string,
+      forceRefresh = false
+    ) => {
+      const activeKey = keyOverride?.trim() || geminiApiKey || '';
+      if (!activeKey) {
+        pendingGeminiRef.current = { kind: 'photoContext', photo, token, type: contextType };
+        setGeminiPromptVisible(true);
+        return;
+      }
+
+      imageContextPhotoRef.current = photo;
+      setImageContextTarget(token);
+      setImageContextKind(contextType);
+      setImageContextError('');
+      setImageContextModalVisible(true);
+
+      const cacheKey = `${photo.id}:${contextType}:${token}`;
+
+      if (!forceRefresh) {
+        try {
+          const cache = await loadContextCache();
+          const cached = cache[cacheKey];
+          if (cached) {
+            setImageContextSentence(cached.sentence);
+            setImageContextRomaji(cached.romaji);
+            setImageContextExplanation(cached.explanation);
+            imageContextGeminiWordsRef.current = cached.words ?? [];
+            setImageContextLoading(false);
+            return;
+          }
+        } catch {
+          /* use network */
+        }
+      }
+
+      setImageContextSentence('');
+      setImageContextRomaji('');
+      setImageContextExplanation('');
+      setImageContextLoading(true);
+
+      try {
+        let ocrText = photo.ocr_text;
+        if (!ocrText) {
+          const ocrCached = imageContextOcrCacheRef.current[photo.id];
+          if (ocrCached) {
+            ocrText = ocrCached;
+          } else {
+            if (!apiKey) {
+              setImageContextError('No Cloud Vision API key configured. Cannot extract text for context.');
+              setImageContextLoading(false);
+              return;
+            }
+            const ocr = await processImage(photo.uri, apiKey, photo.type === 'practice');
+            ocrText = ocr.text;
+            if (ocrText) {
+              imageContextOcrCacheRef.current[photo.id] = ocrText;
+              await updatePhotoOcrText(photo.id, ocrText).catch(() => {});
+            }
+          }
+        }
+
+        if (!ocrText) {
+          setImageContextError('No text could be extracted from this image.');
+          setImageContextLoading(false);
+          return;
+        }
+
+        const result = await generateContextExplanation(activeKey, {
+          type: contextType,
+          text: token,
+          fullOcrText: ocrText,
+        });
+
+        const parsed = parseContextResponse(result.content);
+        await saveContextCacheEntry(cacheKey, parsed).catch(() => {});
+        setImageContextSentence(parsed.sentence);
+        setImageContextRomaji(parsed.romaji);
+        setImageContextExplanation(parsed.explanation);
+        imageContextGeminiWordsRef.current = parsed.words ?? [];
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Failed to generate context explanation.';
+        setImageContextError(message);
+      } finally {
+        setImageContextLoading(false);
+      }
+    },
+    [apiKey, geminiApiKey]
+  );
+
+  const handleImageContextSentencePress = useCallback(
+    async (japaneseLine: string) => {
+      setImageContextWordsBusy(true);
+      setImageContextWordsModal({ visible: true, words: [] });
+      try {
+        const geminiWords = imageContextGeminiWordsRef.current;
+        let words: WordInfo[];
+        if (geminiWords.length) {
+          const surfaces = geminiWords.map((w) => w.word);
+          const dictMap = await lookupWordBatch(surfaces);
+          words = geminiWords.map((gw) => {
+            const dict = dictMap.get(gw.word);
+            if (dict) return dict;
+            return { word: gw.word, reading: gw.reading, meaning: [] };
+          });
+        } else {
+          words = await tokenizeSentenceWords(japaneseLine);
+        }
+        setImageContextWordsModal({ visible: true, words });
+      } catch {
+        setImageContextWordsModal((s) => ({ ...s, visible: false }));
+        Alert.alert('Error', 'Failed to analyze sentence words.');
+      } finally {
+        setImageContextWordsBusy(false);
+      }
+    },
+    []
+  );
+
+  const renderBoldHighlightsForImageContext = useCallback((text: string, targets?: string[]): React.ReactNode[] => {
+    const hlStyle = { backgroundColor: 'rgba(96,165,250,0.35)', borderRadius: 3, fontWeight: '700' as const };
+    const boldParts = text.split(/(\*\*[^*]+\*\*)/g);
+    const nodes: React.ReactNode[] = [];
+    let ki = 0;
+
+    const validTargets = targets?.filter(Boolean) ?? [];
+    const targetRegex = validTargets.length
+      ? new RegExp(`(${validTargets.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'gi')
+      : null;
+
+    const splitByTargets = (seg: string): React.ReactNode[] => {
+      if (!targetRegex) return [<Text key={ki++}>{seg}</Text>];
+      const sub = seg.split(targetRegex);
+      return sub.map((s) =>
+        targetRegex.test(s) ? (
+          <Text key={ki++} style={hlStyle}>
+            {s}
+          </Text>
+        ) : (
+          <Text key={ki++}>{s}</Text>
+        )
+      );
+    };
+
+    for (const part of boldParts) {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        nodes.push(
+          <Text key={ki++} style={hlStyle}>
+            {part.slice(2, -2)}
+          </Text>
+        );
+      } else {
+        nodes.push(...splitByTargets(part));
+      }
+    }
+    return nodes;
+  }, []);
+
   const saveGeminiKeyAndGenerate = useCallback(async () => {
     const trimmed = geminiInput.trim();
     if (!trimmed) return;
+    const pending = pendingGeminiRef.current;
+    pendingGeminiRef.current = null;
     await setGeminiApiKey(trimmed);
     setGeminiPromptVisible(false);
     setShowGeminiKey(false);
-    await createExample(trimmed);
-  }, [createExample, geminiInput, setGeminiApiKey]);
+    if (pending?.kind === 'mnemonic') {
+      await createMnemonic(trimmed);
+    } else if (pending?.kind === 'photoContext') {
+      await runImageContextQuery(pending.photo, pending.token, pending.type, trimmed, false);
+    } else {
+      await createExample(trimmed);
+    }
+  }, [createExample, createMnemonic, geminiInput, runImageContextQuery, setGeminiApiKey]);
 
   const onPressCreateExample = useCallback(() => {
     if (!geminiApiKey) {
+      pendingGeminiRef.current = { kind: 'example' };
       setGeminiPromptVisible(true);
       return;
     }
@@ -778,7 +1000,7 @@ export function DetailScreen() {
             key={item.id}
             photo={item}
             onPress={() => openFullImage(item, { photos })}
-            onLongPress={() => onDeletePhoto(item)}
+            onLongPress={() => setPhotoContextMenu({ visible: true, photo: item })}
           />
         ))}
       </View>
@@ -787,12 +1009,241 @@ export function DetailScreen() {
 
   return (
     <>
-      <Modal visible={geminiPromptVisible} transparent animationType="fade" onRequestClose={() => setGeminiPromptVisible(false)}>
+      <Modal
+        visible={photoContextMenu.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPhotoContextMenu({ visible: false, photo: null })}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => setPhotoContextMenu({ visible: false, photo: null })}
+          style={{
+            flex: 1,
+            justifyContent: 'center',
+            alignItems: 'center',
+            backgroundColor: colors.overlayHeavy,
+            paddingHorizontal: 28,
+          }}
+        >
+          <TouchableWithoutFeedback>
+            <View
+              style={[
+                styles.modalCard,
+                {
+                  alignSelf: 'stretch',
+                  maxWidth: 340,
+                  borderRadius: 16,
+                  paddingBottom: 20,
+                  paddingTop: 20,
+                },
+              ]}
+            >
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: 'rgba(96, 165, 250, 0.22)' }]}
+                activeOpacity={0.8}
+                onPress={() => {
+                  const p = photoContextMenu.photo;
+                  if (!detail || !p) return;
+                  setPhotoContextMenu({ visible: false, photo: null });
+                  runImageContextQuery(p, detail.id, detail.type).catch(() => {});
+                }}
+              >
+                <Text style={[styles.modalBtnText, { color: colors.info }]}>Context in this Image</Text>
+              </TouchableOpacity>
+
+              <View
+                style={{
+                  marginTop: 18,
+                  borderTopWidth: 1,
+                  borderTopColor: colors.borderSubtle,
+                  paddingTop: 14,
+                  paddingBottom: 4,
+                  alignItems: 'center',
+                }}
+              >
+                <TouchableOpacity
+                  activeOpacity={0.65}
+                  hitSlop={{ top: 10, bottom: 10, left: 20, right: 20 }}
+                  onPress={() => {
+                    const p = photoContextMenu.photo;
+                    setPhotoContextMenu({ visible: false, photo: null });
+                    if (p) onDeletePhoto(p);
+                  }}
+                >
+                  <Text style={{ color: colors.accent, fontWeight: '600', fontSize: 14 }}>Delete Image</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
+
+      <Modal
+        visible={imageContextModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setImageContextModalVisible(false)}
+      >
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setImageContextModalVisible(false)}>
+          <TouchableWithoutFeedback>
+            <View style={[styles.modalCard, { maxHeight: '70%' }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Text style={[styles.modalTitle, { flex: 1, marginBottom: 0 }]}>Context: {imageContextTarget}</Text>
+                {!imageContextLoading ? (
+                  <TouchableOpacity
+                    onPress={() => {
+                      const photo = imageContextPhotoRef.current;
+                      if (photo) runImageContextQuery(photo, imageContextTarget, imageContextKind, undefined, true);
+                    }}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    activeOpacity={0.6}
+                    style={{ paddingLeft: 12 }}
+                  >
+                    <Text style={{ color: colors.textMuted, fontSize: 16 }}>↻</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+              {imageContextLoading ? (
+                <View style={{ alignItems: 'center', paddingVertical: 24 }}>
+                  <ActivityIndicator size="large" color={colors.accent} />
+                  <Text style={{ color: colors.textMuted, marginTop: 12, fontSize: 14 }}>Analyzing context…</Text>
+                </View>
+              ) : imageContextError ? (
+                <Text style={{ color: colors.accent, fontSize: 14, lineHeight: 20 }}>{imageContextError}</Text>
+              ) : (
+                <ScrollView style={{ maxHeight: 340 }}>
+                  {imageContextSentence ? (
+                    <View style={{ marginBottom: 12 }}>
+                      <TouchableOpacity
+                        onPress={() => handleImageContextSentencePress(imageContextSentence.replace(/\*\*/g, ''))}
+                        activeOpacity={0.7}
+                        disabled={imageContextWordsBusy}
+                      >
+                        <Text style={{ color: colors.info, fontSize: 16, lineHeight: 24, fontWeight: '600' }}>
+                          {renderBoldHighlightsForImageContext(imageContextSentence, [imageContextTarget])}
+                        </Text>
+                      </TouchableOpacity>
+                      {imageContextRomaji ? (
+                        <TouchableOpacity
+                          onPress={() => speakJa(imageContextSentence.replace(/\*\*/g, ''))}
+                          activeOpacity={0.7}
+                          style={{ marginTop: 4 }}
+                        >
+                          <Text style={{ color: colors.textMuted, fontSize: 14, lineHeight: 20, fontStyle: 'italic' }}>
+                            {renderBoldHighlightsForImageContext(imageContextRomaji, [toRomaji(imageContextTarget)])}{' '}
+                            <Ionicons name="volume-medium-outline" size={15} color={colors.textDim} />
+                          </Text>
+                        </TouchableOpacity>
+                      ) : null}
+                    </View>
+                  ) : null}
+                  {imageContextExplanation ? (
+                    <Text style={{ color: colors.text, fontSize: 15, lineHeight: 22 }}>
+                      {renderBoldHighlightsForImageContext(imageContextExplanation, [
+                        imageContextTarget,
+                        toRomaji(imageContextTarget),
+                      ])}
+                    </Text>
+                  ) : null}
+                </ScrollView>
+              )}
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.modalCancel, { marginTop: 14 }]}
+                onPress={() => setImageContextModalVisible(false)}
+              >
+                <Text style={styles.modalBtnText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
+
+      <Modal
+        visible={imageContextWordsModal.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setImageContextWordsModal((s) => ({ ...s, visible: false }))}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setImageContextWordsModal((s) => ({ ...s, visible: false }))}
+        >
+          <TouchableWithoutFeedback>
+            <View style={[styles.modalCard, { maxHeight: '70%' }]}>
+              <Text style={styles.modalTitle}>Words in this sentence</Text>
+              {imageContextWordsBusy ? (
+                <ActivityIndicator size="small" color={colors.info} style={{ marginVertical: 12 }} />
+              ) : imageContextWordsModal.words.length === 0 ? (
+                <Text style={styles.mutedSmall}>No dictionary words found.</Text>
+              ) : (
+                <ScrollView>
+                  {imageContextWordsModal.words.map((w) => (
+                    <TouchableOpacity
+                      key={w.word}
+                      style={styles.spottedRow}
+                      onPress={() => {
+                        setImageContextWordsModal((s) => ({ ...s, visible: false }));
+                        setImageContextModalVisible(false);
+                        openDetail('word', w.word).catch(() => {});
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={[styles.spottedMain, { flex: 1 }]} numberOfLines={1} ellipsizeMode="tail">
+                        {w.word}
+                        {w.reading ? <Text style={styles.spottedGloss}> ({toRomaji(w.reading)})</Text> : null}
+                        {w.meaning.length > 0 ? <Text style={styles.spottedGloss}> — {w.meaning.join(', ')}</Text> : null}
+                      </Text>
+                      <TouchableOpacity
+                        onPress={() => {
+                          setImageContextWordsModal((s) => ({ ...s, visible: false }));
+                          const photo = imageContextPhotoRef.current;
+                          if (photo) runImageContextQuery(photo, w.word, 'word').catch(() => {});
+                        }}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        style={{
+                          width: 26,
+                          height: 26,
+                          borderRadius: 13,
+                          borderWidth: 1.5,
+                          borderColor: colors.textMuted,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          marginLeft: 8,
+                        }}
+                      >
+                        <Text style={{ color: colors.textMuted, fontSize: 14, fontWeight: '700', lineHeight: 16 }}>?</Text>
+                      </TouchableOpacity>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )}
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.modalCancel, { marginTop: 10 }]}
+                onPress={() => setImageContextWordsModal((s) => ({ ...s, visible: false }))}
+              >
+                <Text style={styles.modalBtnText}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableWithoutFeedback>
+        </TouchableOpacity>
+      </Modal>
+
+      <Modal
+        visible={geminiPromptVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          pendingGeminiRef.current = null;
+          setGeminiPromptVisible(false);
+        }}
+      >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalCard, { borderTopLeftRadius: 16, borderTopRightRadius: 16 }]}>
             <Text style={styles.modalTitle}>Gemini API Key Required</Text>
             <Text style={[styles.mutedSmall, { marginBottom: 8 }]}>
-              Enter your Gemini API key to generate example sentences.
+              Enter your Gemini API key to use AI-powered features.
             </Text>
             <View style={{ flexDirection: 'row', gap: 8 }}>
               <TextInput
@@ -829,7 +1280,14 @@ export function DetailScreen() {
             >
               <Text style={[styles.modalBtnText, { color: colors.dark }]}>Save Key</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => setGeminiPromptVisible(false)} style={styles.modalBtn} activeOpacity={0.8}>
+            <TouchableOpacity
+              onPress={() => {
+                pendingGeminiRef.current = null;
+                setGeminiPromptVisible(false);
+              }}
+              style={styles.modalBtn}
+              activeOpacity={0.8}
+            >
               <Text style={styles.modalBtnText}>Cancel</Text>
             </TouchableOpacity>
           </View>
